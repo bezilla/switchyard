@@ -81,12 +81,16 @@ type Config struct {
 	RampFactor   float64
 	RampInterval time.Duration
 
+	// ProbeEarlyRecovery lets consecutive successes recorded while open cut
+	// the cooldown short, instead of waiting the backoff out. It is OFF by
+	// default: see the commentary on Breaker.SetProbeEarlyRecovery for the
+	// failure mode it introduces.
+	ProbeEarlyRecovery bool
+
 	// ProbeSuccessesToRecover is how many consecutive successes recorded
-	// while open cut the cooldown short and start recovery immediately.
+	// while open cut the cooldown short, when ProbeEarlyRecovery is on.
 	// Nothing is admitted while open, so the only thing that can produce a
-	// success in that state is an out-of-band health probe -- which is
-	// exactly the evidence that the backoff is now measuring failures that
-	// have stopped happening.
+	// success in that state is an out-of-band health probe.
 	ProbeSuccessesToRecover int
 
 	// Now and Rand are injected so tests can drive time and admission without
@@ -113,8 +117,14 @@ func DefaultConfig() Config {
 		RampFactor:    1.6,
 		RampInterval:  900 * time.Millisecond,
 
+		// Off by default. The demo turns it on to keep `make heal-apex`
+		// responsive; a real deployment should decide deliberately.
+		ProbeEarlyRecovery: false,
+
 		// Two rather than one: a single probe succeeding against a provider
-		// that is flapping would restart the ramp on every flap.
+		// that is flapping would restart the ramp on every flap. Two is a
+		// mitigation, not a fix -- a dependency that answers probes but
+		// cannot serve traffic passes both of them just as easily as one.
 		ProbeSuccessesToRecover: 2,
 	}
 }
@@ -144,6 +154,11 @@ type Breaker struct {
 	// openSuccess counts consecutive successes seen while open, which can
 	// only come from health probes.
 	openSuccess int
+
+	// earlyRecovery mirrors Config.ProbeEarlyRecovery and can be flipped at
+	// runtime, because the demo turns it on for one command and a restart in
+	// the middle of a failover would destroy the thing being demonstrated.
+	earlyRecovery bool
 
 	// transitions counts state changes, which is what a dashboard graphs.
 	trips      int
@@ -193,11 +208,12 @@ func New(cfg Config) *Breaker {
 		cfg.Rand = func() float64 { return rand.Float64() } //nolint:gosec // load shaping, not security
 	}
 	return &Breaker{
-		cfg:      cfg,
-		state:    Closed,
-		buckets:  make([]bucket, cfg.Buckets),
-		cooldown: cfg.Cooldown,
-		admit:    1,
+		cfg:           cfg,
+		state:         Closed,
+		buckets:       make([]bucket, cfg.Buckets),
+		cooldown:      cfg.Cooldown,
+		admit:         1,
+		earlyRecovery: cfg.ProbeEarlyRecovery,
 	}
 }
 
@@ -287,6 +303,46 @@ func (b *Breaker) open(now time.Time) {
 	b.resetWindow()
 }
 
+// SetProbeEarlyRecovery turns probe-driven early recovery on or off at runtime.
+//
+// When on, two consecutive health probes succeeding against an open circuit
+// start the recovery ramp immediately rather than waiting out the remaining
+// cooldown. That is a real convenience -- after repeated trips the backoff
+// reaches tens of seconds, and it was sized by an outage that has since ended.
+//
+// It is off by default because a health probe is a weaker signal than it looks.
+// A probe is cheap and shallow; a real request is neither. A dependency whose
+// connection pool is exhausted, whose cache is cold, or whose downstream is
+// still down can answer a probe correctly while failing every request it is
+// given. Two probes passing then collapses a forty-second backoff to about one
+// second, the ramp admits traffic, the traffic fails, and the circuit reopens
+// with a longer cooldown -- which early recovery will shorten again on the next
+// two probes. The result is a flap whose period is set by the probe interval
+// rather than by the backoff that exists to damp exactly this.
+//
+// The backoff is the conservative default for that reason: waiting is cheap
+// when there is somewhere else to send the traffic, and a gateway with a
+// working failover path always has somewhere else. Enable this when probes are
+// known to exercise the same path real requests take.
+func (b *Breaker) SetProbeEarlyRecovery(on bool) {
+	b.mu.Lock()
+	b.earlyRecovery = on
+	if !on {
+		b.openSuccess = 0
+	}
+	b.mu.Unlock()
+}
+
+// ProbeEarlyRecovery reports whether probe-driven early recovery is enabled.
+func (b *Breaker) ProbeEarlyRecovery() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.earlyRecovery
+}
+
+// probeEarlyRecovery reads the flag. Caller holds the lock.
+func (b *Breaker) probeEarlyRecovery() bool { return b.earlyRecovery }
+
 // Success records a request that worked.
 func (b *Breaker) Success() { b.record(true) }
 
@@ -309,10 +365,15 @@ func (b *Breaker) record(ok bool) {
 	}
 
 	// While open, nothing is admitted, so any success here came from a health
-	// probe. Enough of them in a row means the provider is answering again and
-	// there is no reason to sit out the rest of a cooldown that was sized by
-	// an outage which has ended.
+	// probe. When early recovery is enabled, enough of them in a row means the
+	// provider is answering again and there is no reason to sit out the rest
+	// of a cooldown that was sized by an outage which has ended.
 	if b.state == Open {
+		if !b.probeEarlyRecovery() {
+			// Cooldown only: the backoff is served in full, and probes are
+			// recorded for the dashboard without shortening it.
+			return
+		}
 		if ok {
 			b.openSuccess++
 			if b.openSuccess >= b.cfg.ProbeSuccessesToRecover {
@@ -419,6 +480,12 @@ type Stats struct {
 	Failures   int     `json:"window_failures"`
 	Trips      int     `json:"trips"`
 	Recoveries int     `json:"recoveries"`
+
+	// ProbeEarlyRecovery reports whether probe successes may cut an open
+	// circuit's cooldown short. Surfaced because it changes how long a heal
+	// takes to show up, and an operator reading a slow recovery should be
+	// able to see whether this is why.
+	ProbeEarlyRecovery bool `json:"probe_early_recovery"`
 }
 
 // Stats snapshots the breaker.
@@ -437,11 +504,12 @@ func (b *Breaker) Stats() Stats {
 	case Recovering:
 	}
 	return Stats{
-		State:      b.state.String(),
-		AdmitRatio: admit,
-		Successes:  s,
-		Failures:   f,
-		Trips:      b.trips,
-		Recoveries: b.recoveries,
+		State:              b.state.String(),
+		AdmitRatio:         admit,
+		Successes:          s,
+		Failures:           f,
+		Trips:              b.trips,
+		Recoveries:         b.recoveries,
+		ProbeEarlyRecovery: b.earlyRecovery,
 	}
 }

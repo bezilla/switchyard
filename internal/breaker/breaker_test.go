@@ -260,12 +260,53 @@ func TestBackoffIsCapped(t *testing.T) {
 	}
 }
 
-// TestProbeSuccessCutsCooldownShort covers the case that makes healing visible:
-// the backoff was sized by an outage that has now ended, and the health probe
-// is the only thing that can say so, because an open breaker sends no traffic.
+// TestProbeEarlyRecoveryIsOffByDefault pins the conservative default. A probe
+// is a cheap, shallow request; a dependency can answer one correctly while
+// failing every real request it is given, so probes alone must not be enough to
+// collapse a backoff.
+func TestProbeEarlyRecoveryIsOffByDefault(t *testing.T) {
+	b, clk, _ := newTestBreaker(t)
+	cfg := DefaultConfig()
+
+	if cfg.ProbeEarlyRecovery {
+		t.Fatal("DefaultConfig enables probe-driven early recovery; it must be opt-in")
+	}
+	if b.ProbeEarlyRecovery() {
+		t.Fatal("a default breaker has probe-driven early recovery on")
+	}
+
+	record(b, 5, 5)
+	if b.State() != Open {
+		t.Fatalf("setup: breaker did not open")
+	}
+
+	// Well inside the cooldown, with far more passing probes than the enabled
+	// path would need.
+	clk.add(cfg.Cooldown / 4)
+	for range cfg.ProbeSuccessesToRecover * 5 {
+		b.Success()
+	}
+
+	if got := b.State(); got != Open {
+		t.Fatalf("state = %v, want %v: probes must not shorten the cooldown "+
+			"unless early recovery is enabled", got, Open)
+	}
+
+	// The cooldown still expires normally; the flag changes when recovery
+	// starts, not whether it ever does.
+	clk.add(cfg.Cooldown)
+	if got := b.State(); got != Recovering {
+		t.Fatalf("state after the full cooldown = %v, want %v", got, Recovering)
+	}
+}
+
+// TestProbeSuccessCutsCooldownShort covers the affordance the demo enables: the
+// backoff was sized by an outage that has now ended, and the health probe is the
+// only thing that can say so, because an open breaker sends no traffic.
 func TestProbeSuccessCutsCooldownShort(t *testing.T) {
 	b, clk, _ := newTestBreaker(t)
 	cfg := DefaultConfig()
+	b.SetProbeEarlyRecovery(true)
 
 	record(b, 5, 5)
 	if b.State() != Open {
@@ -291,6 +332,7 @@ func TestProbeSuccessCutsCooldownShort(t *testing.T) {
 func TestProbeSuccessesMustBeConsecutive(t *testing.T) {
 	b, clk, _ := newTestBreaker(t)
 	cfg := DefaultConfig()
+	b.SetProbeEarlyRecovery(true)
 
 	record(b, 5, 5)
 	clk.add(cfg.Cooldown / 4)
@@ -304,6 +346,35 @@ func TestProbeSuccessesMustBeConsecutive(t *testing.T) {
 	if got := b.State(); got != Open {
 		t.Fatalf("state = %v, want %v: a flapping provider should not "+
 			"restart the ramp on every good probe", got, Open)
+	}
+}
+
+// TestProbeEarlyRecoveryTogglesAtRuntime covers the path the admin endpoint
+// uses: the demo turns this on mid-incident, and restarting to pick up a flag
+// would destroy the state being demonstrated.
+func TestProbeEarlyRecoveryTogglesAtRuntime(t *testing.T) {
+	b, clk, _ := newTestBreaker(t)
+	cfg := DefaultConfig()
+
+	record(b, 5, 5)
+	clk.add(cfg.Cooldown / 4)
+
+	for range cfg.ProbeSuccessesToRecover {
+		b.Success()
+	}
+	if got := b.State(); got != Open {
+		t.Fatalf("state with the flag off = %v, want %v", got, Open)
+	}
+
+	b.SetProbeEarlyRecovery(true)
+	for range cfg.ProbeSuccessesToRecover {
+		b.Success()
+	}
+	if got := b.State(); got != Recovering {
+		t.Fatalf("state after enabling the flag = %v, want %v", got, Recovering)
+	}
+	if got := b.Stats().ProbeEarlyRecovery; !got {
+		t.Fatal("Stats does not report that early recovery is enabled")
 	}
 }
 

@@ -67,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/inject", s.handleInject)
 	mux.HandleFunc("POST /admin/policy", s.handlePolicy)
 	mux.HandleFunc("POST /admin/traffic", s.handleTraffic)
+	mux.HandleFunc("POST /admin/recovery", s.handleRecovery)
 
 	return mux
 }
@@ -345,6 +346,31 @@ func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
 	s.load.SetRate(req.RPS)
 	s.log.Info("offered load changed", "rps", req.RPS)
 	writeJSON(w, http.StatusOK, map[string]float64{"rps": s.load.Rate()})
+}
+
+// handleRecovery toggles probe-driven early recovery on every breaker.
+//
+// It exists so `make heal-apex` can turn the affordance on for the demo without
+// a restart -- restarting mid-failover would destroy the state being
+// demonstrated. The flag is off by default and this is the only thing that
+// turns it on; see DESIGN.md for the flapping risk it accepts.
+func (s *Server) handleRecovery(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProbeEarlyRecovery *bool `json:"probe_early_recovery"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("decode body: %v", err))
+		return
+	}
+	if req.ProbeEarlyRecovery == nil {
+		writeError(w, http.StatusBadRequest, "probe_early_recovery is required")
+		return
+	}
+	for _, t := range s.router.Targets() {
+		t.Breaker.SetProbeEarlyRecovery(*req.ProbeEarlyRecovery)
+	}
+	s.log.Info("probe-driven early recovery changed", "enabled", *req.ProbeEarlyRecovery)
+	writeJSON(w, http.StatusOK, map[string]bool{"probe_early_recovery": *req.ProbeEarlyRecovery})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -42,6 +42,8 @@ func run() error {
 		seed         = flag.Uint64("seed", envUint("SWITCHYARD_SEED", 1), "simulation seed")
 		probeEvery   = flag.Duration("probe-interval", envDuration("SWITCHYARD_PROBE_INTERVAL", time.Second), "health probe interval")
 		probeTimeout = flag.Duration("probe-timeout", envDuration("SWITCHYARD_PROBE_TIMEOUT", 2*time.Second), "health probe timeout")
+		earlyRecover = flag.Bool("probe-early-recovery", envBool("SWITCHYARD_PROBE_EARLY_RECOVERY", false),
+			"let two passing health probes cut an open circuit's cooldown short (demo affordance; see DESIGN.md)")
 	)
 	flag.Parse()
 
@@ -68,10 +70,13 @@ func run() error {
 	// Priority is the failover order: apex first because it is the fastest and
 	// most reliable, local last because it is the smallest. Cost routing
 	// ignores this ordering entirely and uses it only to break ties.
+	breakerCfg := breaker.DefaultConfig()
+	breakerCfg.ProbeEarlyRecovery = *earlyRecover
+
 	targets := []*router.Target{
-		{Provider: provider.Apex(*seed), Priority: 10, Breaker: breaker.New(breaker.DefaultConfig())},
-		{Provider: provider.Bargain(*seed), Priority: 20, Breaker: breaker.New(breaker.DefaultConfig())},
-		{Provider: provider.Local(*seed), Priority: 30, Breaker: breaker.New(breaker.DefaultConfig())},
+		{Provider: provider.Apex(*seed), Priority: 10, Breaker: breaker.New(breakerCfg)},
+		{Provider: provider.Bargain(*seed), Priority: 20, Breaker: breaker.New(breakerCfg)},
+		{Provider: provider.Local(*seed), Priority: 30, Breaker: breaker.New(breakerCfg)},
 	}
 
 	rt := router.New(policy, tel.Observer(), targets...)
@@ -98,7 +103,8 @@ func run() error {
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("switchyard listening",
-			"addr", *addr, "policy", policy, "rps", *rps, "version", version)
+			"addr", *addr, "policy", policy, "rps", *rps, "version", version,
+			"probe_early_recovery", *earlyRecover)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 		}
@@ -139,6 +145,15 @@ func envUint(key string, def uint64) uint64 {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.ParseUint(v, 10, 64); err == nil {
 			return i
+		}
+	}
+	return def
+}
+
+func envBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return def

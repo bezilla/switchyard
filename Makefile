@@ -80,6 +80,13 @@ break-apex: ## Take apex down: watch traffic move and availability hold
 
 .PHONY: heal-apex
 heal-apex: ## Bring apex back: watch the gradual ramp, not a stampede
+	@# Probe-driven early recovery is off by default, so an open circuit serves
+	@# its full backoff -- which after repeated trips is tens of seconds of
+	@# nothing happening. The demo turns it on here so the heal is visible on
+	@# the timescale of a person watching. See DESIGN.md for what that trades.
+	@$(CURL) -X POST $(GATEWAY)/admin/recovery \
+		-H 'content-type: application/json' \
+		-d '{"probe_early_recovery":true}' >/dev/null
 	@$(CURL) -X POST $(GATEWAY)/admin/inject \
 		-H 'content-type: application/json' \
 		-d '{"provider":"apex","mode":"healthy"}' | $(FORMAT)
@@ -136,7 +143,7 @@ policy-failover: ## Route primary-first (the default)
 		-d '{"policy":"failover"}' | $(FORMAT)
 
 .PHONY: reset
-reset: ## Clear every injected fault and restore the default load
+reset: ## Clear every injected fault, restore the default load and the safe defaults
 	@for p in apex bargain local; do \
 		$(CURL) -X POST $(GATEWAY)/admin/inject \
 			-H 'content-type: application/json' \
@@ -146,7 +153,9 @@ reset: ## Clear every injected fault and restore the default load
 		-H 'content-type: application/json' -d '{"rps":10}' >/dev/null
 	@$(CURL) -X POST $(GATEWAY)/admin/policy \
 		-H 'content-type: application/json' -d '{"policy":"failover"}' >/dev/null
-	@echo 'all providers healthy, load 10 rps, policy failover'
+	@$(CURL) -X POST $(GATEWAY)/admin/recovery \
+		-H 'content-type: application/json' -d '{"probe_early_recovery":false}' >/dev/null
+	@echo 'all providers healthy, load 10 rps, policy failover, early recovery off'
 
 .PHONY: state
 state: ## Print the gateway's current routing and health state
