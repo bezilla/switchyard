@@ -26,7 +26,14 @@ BREAK_WINDOW="${BREAK_WINDOW:-30}"
 HEAL_WINDOW="${HEAL_WINDOW:-30}"
 
 # Thresholds.
-MAX_APEX_AFTER_BREAK=15   # in-flight requests may still land after the break
+#
+# Apex is judged on its rate relative to its own steady state rather than on an
+# absolute count. An absolute cap has to be guessed against the number of
+# requests already in flight when the fault lands -- roughly rps times mean
+# duration, which moves with the offered load and with how fast the runner is.
+# The rate ratio is what "traffic moved" actually means and does not need
+# retuning when either changes.
+MAX_APEX_RATE_SHARE=15    # percent of its steady-state rate
 MIN_BARGAIN_AFTER_BREAK=60
 MIN_APEX_AFTER_HEAL=40
 MIN_AVAILABILITY=95       # percent, integer arithmetic throughout
@@ -156,16 +163,21 @@ counted=$(( d_success + d_dropped ))
 [ "$counted" -gt 0 ] || die 'no requests were counted during the break window'
 availability=$(( d_success * 100 / counted ))
 
+# Apex's rate during the break, as a percentage of its rate before it. Scaled
+# by the two window lengths so the comparison is per-second on both sides.
+apex_share=$(( d_apex * WARMUP * 100 / (a_apex * BREAK_WINDOW) ))
+
 printf '\nduring the break window:\n'
-printf '  apex served         %6d   (allowed at most %d)\n' "$d_apex" "$MAX_APEX_AFTER_BREAK"
+printf '  apex served         %6d   at %d%% of its steady-state rate (allowed at most %d%%)\n' \
+	"$d_apex" "$apex_share" "$MAX_APEX_RATE_SHARE"
 printf '  bargain served      %6d   (needs at least %d)\n' "$d_bargain" "$MIN_BARGAIN_AFTER_BREAK"
 printf '  local served        %6d\n' "$d_local"
 printf '  failovers           %6d\n' "$d_failovers"
 printf '  requests dropped    %6d of %d counted\n' "$d_dropped" "$counted"
 printf '  availability        %6d%%  (needs at least %d%%)\n' "$availability" "$MIN_AVAILABILITY"
 
-[ "$d_apex" -le "$MAX_APEX_AFTER_BREAK" ] ||
-	die "apex served $d_apex requests after being broken, over the $MAX_APEX_AFTER_BREAK allowed for requests already in flight"
+[ "$apex_share" -le "$MAX_APEX_RATE_SHARE" ] ||
+	die "apex was still serving at ${apex_share}% of its steady-state rate after being broken, over the ${MAX_APEX_RATE_SHARE}% ceiling; traffic did not move off it"
 [ "$d_bargain" -ge "$MIN_BARGAIN_AFTER_BREAK" ] ||
 	die "bargain served $d_bargain requests, under the $MIN_BARGAIN_AFTER_BREAK expected; traffic did not move"
 [ "$d_failovers" -gt 0 ] ||
@@ -230,7 +242,7 @@ printf '  providers with successful requests: %s\n' "$prom_providers"
 
 step 'totals'
 printf '  steady state:  apex %d, bargain %d, local %d\n' "$a_apex" "$a_bargain" "$a_local"
-printf '  apex broken:   apex +%d, bargain +%d, local +%d, dropped %d, availability %d%%\n' \
-	"$d_apex" "$d_bargain" "$d_local" "$d_dropped" "$availability"
+printf '  apex broken:   apex +%d (%d%% of its former rate), bargain +%d, local +%d, dropped %d, availability %d%%\n' \
+	"$d_apex" "$apex_share" "$d_bargain" "$d_local" "$d_dropped" "$availability"
 printf '  apex healed:   apex +%d, dropped %d, availability %d%%\n' \
 	"$h_apex" "$h_dropped" "$h_availability"
