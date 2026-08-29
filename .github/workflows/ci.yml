@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build · vet · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod   # tracks go.mod; cannot drift from it
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: test
+        run: go test -race ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.1  # pinned so a lint release cannot redden a green branch
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Reports only vulnerabilities on a call path this code actually reaches,
+      # so a CVE in an unused corner of a dependency does not stop the world.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  identity:
+    name: identity
+    runs-on: ubuntu-latest
+    steps:
+      # The whole history, not a shallow clone: this job's entire job is to
+      # check every commit that exists, and the default fetch-depth of 1 would
+      # let it pass by only ever looking at one.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # core.hooksPath is per-clone configuration and does not survive a clone,
+      # so the pre-push hook is not installed here and could not have run. This
+      # is the server-side copy of the same rules: the one no clone can forget.
+      - name: identity and attribution over all history
+        run: bash scripts/check-identity.sh
+
+      - name: prove the pre-push gate still rejects bad history
+        run: bash .githooks/selftest.sh
+
+  secrets:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: gitleaks over full history
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
