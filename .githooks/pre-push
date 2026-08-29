@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# pre-push: the last gate before history leaves this machine.
+#
+# Three checks, ordered by how expensive each is to undo once pushed:
+#
+#   1. identity     every commit is authored AND committed by the one canonical
+#                   person. Identity is baked into the commit hash, so fixing it
+#                   after a push means rewriting published history.
+#   2. attribution  no generated-by marks, in commit messages or in the tree.
+#   3. secrets      gitleaks over history.
+#
+# The forbidden terms below are written with single-character brackets: in a
+# POSIX extended regex [x] matches exactly x, so the pattern is literal while
+# this file's own bytes are not. That is why this hook can scan for the terms
+# without tripping over itself. Do not "simplify" the brackets away.
+#
+# Installed by `make init`, which sets core.hooksPath=.githooks. That setting is
+# per-clone and does NOT travel with a clone, so the same rules are enforced
+# server-side by the `identity` CI job. This hook is the fast local copy; CI is
+# the copy nobody can forget to install.
+
+set -uo pipefail
+
+CANONICAL_NAME='Paul Bezilla'
+CANONICAL_EMAIL='bezilla@protonmail.com'
+CANONICAL="${CANONICAL_NAME} <${CANONICAL_EMAIL}>"
+
+# Bracketed so this file contains zero literal instances of the terms.
+FORBIDDEN='c[l]aude|anthrop[i]c|co-auth[o]red'
+
+ZERO='0000000000000000000000000000000000000000'
+remote_name="${1:-origin}"
+
+fail() {
+	printf 'pre-push: %s\n' "$1" >&2
+	exit 1
+}
+
+# Collect the commits this push would publish. Ranges are resolved one ref at a
+# time: `--not` toggles for the rest of the argument list, so accumulating
+# several refs into one rev-list invocation would silently un-negate the
+# exclusions after the first ref.
+commits=''
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+	[ -z "${local_sha:-}" ] && continue
+	# Branch deletion publishes no commits, so there is nothing to check.
+	[ "$local_sha" = "$ZERO" ] && continue
+
+	if [ "$remote_sha" = "$ZERO" ]; then
+		# New branch: everything not already on the remote. On a first push
+		# the remote has no refs, so this is the whole of history.
+		ref_commits="$(git rev-list "$local_sha" --not --remotes="$remote_name")"
+	else
+		ref_commits="$(git rev-list "${remote_sha}..${local_sha}")"
+	fi
+	commits="${commits}${ref_commits}"$'\n'
+done
+
+commits="$(printf '%s' "$commits" | grep -v '^$' | sort -u || true)"
+
+# Pushing nothing, or a pure deletion, is not an occasion to fail.
+[ -z "$commits" ] && exit 0
+
+n=0
+while read -r sha; do
+	[ -z "$sha" ] && continue
+	n=$((n + 1))
+
+	# --- 1. identity ------------------------------------------------------
+	# Author and committer are separate fields, and every server-side merge
+	# mode rewrites at least one of them. Both must be the canonical identity.
+	author="$(git show -s --format='%an <%ae>' "$sha")"
+	committer="$(git show -s --format='%cn <%ce>' "$sha")"
+
+	[ "$author" = "$CANONICAL" ] ||
+		fail "commit ${sha:0:12} author is '${author}', expected '${CANONICAL}'"
+	[ "$committer" = "$CANONICAL" ] ||
+		fail "commit ${sha:0:12} committer is '${committer}', expected '${CANONICAL}'"
+
+	# --- 2. attribution ---------------------------------------------------
+	# The whole message: subject, body and trailers.
+	if git show -s --format='%B' "$sha" | grep -qiE "$FORBIDDEN"; then
+		fail "commit ${sha:0:12} message contains a forbidden attribution term"
+	fi
+
+	# The tree as of this commit, so a term cannot land in one commit and be
+	# quietly deleted by a later commit in the same push.
+	hits="$(git grep -ilE "$FORBIDDEN" "$sha" -- . 2>/dev/null || true)"
+	if [ -n "$hits" ]; then
+		printf 'pre-push: commit %s has forbidden terms in:\n' "${sha:0:12}" >&2
+		printf '%s\n' "$hits" | sed 's/^/  /' >&2
+		exit 1
+	fi
+done <<< "$commits"
+
+# --- 3. secrets ---------------------------------------------------------------
+# Fails closed: a gate that skips silently when its scanner is missing is not a
+# gate. `make init` checks for gitleaks for this reason.
+command -v gitleaks >/dev/null 2>&1 ||
+	fail 'gitleaks not found on PATH; install it (brew install gitleaks). This gate does not skip.'
+
+if ! leaks="$(gitleaks git --no-banner --redact --log-level error . 2>&1)"; then
+	printf 'pre-push: gitleaks found secrets in history:\n%s\n' "$leaks" >&2
+	exit 1
+fi
+
+printf 'pre-push: %d commit(s) checked -- identity, attribution, secrets all clean\n' "$n" >&2
+exit 0
