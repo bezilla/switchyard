@@ -1,0 +1,13 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    uid: switchyard-prom
+    jsonData:
+      # Match the scrape interval so Grafana's $__rate_interval lands on a
+      # sensible multiple rather than smoothing the transition away.
+      timeInterval: 5s

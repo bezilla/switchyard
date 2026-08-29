@@ -1,0 +1,16 @@
+apiVersion: 1
+
+providers:
+  - name: switchyard
+    orgId: 1
+    folder: Switchyard
+    type: file
+    # The dashboards are source, not user state. Disabling UI deletion keeps
+    # the file on disk authoritative; edits made in the browser are for
+    # exploring, and anything worth keeping goes back into the JSON.
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

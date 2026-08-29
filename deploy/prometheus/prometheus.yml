@@ -1,0 +1,17 @@
+# Five seconds rather than the usual fifteen. The demo's whole point is a
+# transition that takes about ten seconds end to end, and a fifteen-second
+# scrape would render that as two points on a line.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: switchyard
+    static_configs:
+      - targets: ["switchyard:8080"]
+        labels:
+          service: switchyard
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

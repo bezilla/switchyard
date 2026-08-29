@@ -1,0 +1,83 @@
+# The whole demo: gateway, scraper, dashboards. `docker compose up` and open
+# http://localhost:3000 -- traffic is already flowing and no login is asked for.
+
+name: switchyard
+
+services:
+  switchyard:
+    build:
+      context: .
+      args:
+        VERSION: ${SWITCHYARD_VERSION:-dev}
+    image: switchyard:local
+    container_name: switchyard
+    ports:
+      # Host ports are overridable because 8080 and 3000 are the two most
+      # contended ports on a developer machine, and "the demo does not start"
+      # is a bad first impression for a project about failure handling.
+      - "${SWITCHYARD_PORT:-8080}:8080"
+    environment:
+      # The default offered load is deliberately below what the two surviving
+      # providers can carry on their own. Failover cannot hold availability
+      # that the remaining capacity was never able to serve, and a demo that
+      # pretended otherwise would be lying about the hard part. `make
+      # spike-traffic` raises it past that line on purpose.
+      SWITCHYARD_RPS: "${SWITCHYARD_RPS:-10}"
+      SWITCHYARD_POLICY: "${SWITCHYARD_POLICY:-failover}"
+      SWITCHYARD_SEED: "${SWITCHYARD_SEED:-1}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    container_name: switchyard-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Two hours is plenty: this is a demo you watch, not a system you
+      # operate, and a short retention keeps the container disposable.
+      - --storage.tsdb.retention.time=2h
+      - --web.enable-lifecycle
+    depends_on:
+      switchyard:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.3.1
+    container_name: switchyard-grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      # Anonymous viewer access: the demo is three commands and a browser tab,
+      # and a login prompt in the middle of that is three commands and a
+      # password reset. Viewer only, so nobody can edit the provisioned
+      # dashboards through the UI.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+
+      # Land on the dashboard rather than on an empty home page.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/switchyard.json
+
+      GF_USERS_DEFAULT_THEME: "dark"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_LOG_LEVEL: "warn"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
