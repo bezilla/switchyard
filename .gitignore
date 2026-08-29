@@ -1,0 +1,18 @@
+# Binaries
+/switchyard
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+vendor/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local compose state
+/deploy/.env
