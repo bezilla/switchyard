@@ -127,6 +127,7 @@ and takes about two minutes.
 | `lint` | golangci-lint, pinned version |
 | `vuln` | govulncheck |
 | `identity` | canonical identity and no attribution strings, over all history |
+| `secrets` | gitleaks over the full history |
 | `e2e-failover` | starts the stack, breaks a provider, asserts from parsed metrics |
 
 ---

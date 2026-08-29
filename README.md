@@ -10,7 +10,8 @@ words. Switchyard is that argument as running code.
 
 ## The result
 
-One provider taken down hard, mid-traffic, with a load generator running:
+`apex` — the fastest and most expensive of three simulated providers — taken
+down hard, mid-traffic, with a load generator running:
 
 | | |
 |---|---|
@@ -18,6 +19,10 @@ One provider taken down hard, mid-traffic, with a load generator running:
 | **Requests dropped** | 0 |
 | **Availability held** | 100% |
 | **Error budget burned** | 0.00× |
+
+One run of `make e2e`, which asserts these from parsed Prometheus metrics rather
+than from log output. Arrival times are random, so the failover count moves by a
+few either way between runs; the zero and the 100% do not.
 
 The provider comes back on a ramp, not a cliff. Admitted traffic climbs:
 
@@ -54,6 +59,11 @@ Open <http://localhost:3000>. No login — the dashboard is the home page and
 traffic is already flowing. Give it thirty seconds to fill in, then run these in
 order:
 
+> Ports 3000 and 8080 are the two most contended on a developer machine. If
+> either is taken, set `GRAFANA_PORT`, `SWITCHYARD_PORT` or `PROMETHEUS_PORT`
+> and the make targets will follow:
+> `SWITCHYARD_PORT=8090 docker compose up` then `make state SWITCHYARD_PORT=8090`.
+
 ```sh
 make break-apex     # apex starts returning 503s
 ```
@@ -70,6 +80,13 @@ make heal-apex      # apex answers again
 
 Watch **breaker admit ratio** climb through the middle before closing. That is
 the ramp above, live.
+
+`heal-apex` also switches on `-probe-early-recovery`, which lets two passing
+health probes cut short a cooldown that has backed off to tens of seconds. It is
+**off by default** — a probe is cheap and shallow where a real request is
+neither, so a dependency can pass probes while failing traffic. The demo turns it
+on so the heal happens on the timescale of someone watching;
+[DESIGN.md](DESIGN.md) has the argument for why you might not want it.
 
 ```sh
 make ratelimit-bargain   # a healthy provider shedding load; its breaker stays closed
@@ -100,6 +117,22 @@ X-Switchyard-Provider: apex
 X-Switchyard-Policy: failover
 X-Switchyard-Failovers: 0
 ```
+
+The make targets above are thin wrappers over this HTTP surface:
+
+| endpoint | what it does |
+|---|---|
+| `POST /v1/chat` | streams a completion; response headers name the provider chosen |
+| `GET /metrics` | Prometheus exposition |
+| `GET /admin/state` | routing, breaker and health state as JSON |
+| `POST /admin/inject` | `{"provider":"apex","mode":"error\|ratelimit\|slow\|healthy","rate":1}` |
+| `POST /admin/policy` | `{"policy":"failover\|cost"}` |
+| `POST /admin/traffic` | `{"rps":45}` |
+| `POST /admin/recovery` | `{"probe_early_recovery":true}` |
+| `GET /healthz`, `GET /readyz` | process liveness; whether any provider can serve |
+
+None of these are authenticated. That is deliberate for a demo and is reason
+enough on its own not to expose this anywhere public.
 
 ## How it works
 
