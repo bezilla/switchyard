@@ -11,6 +11,11 @@ set -uo pipefail
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pre-push"
 [ -x "$HOOK" ] || { echo "selftest: $HOOK is not executable"; exit 1; }
 
+# The server-side copy of the same rules. The hook is range-scoped by whatever
+# is being pushed; this one chooses its own scope, so the choice needs testing.
+CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/check-identity.sh"
+[ -r "$CHECK" ] || { echo "selftest: $CHECK is not readable"; exit 1; }
+
 GOOD_NAME='Paul Bezilla'
 GOOD_EMAIL='bezilla@protonmail.com'
 ZERO='0000000000000000000000000000000000000000'
@@ -19,6 +24,14 @@ ZERO='0000000000000000000000000000000000000000'
 # but the strings it builds at runtime do.
 TERM_A='c'"$(printf 'l')"'aude'
 TERM_B='co-'"$(printf 'authored')"'-by'
+
+# The identity a dependency bot actually writes: author is the bot, committer is
+# the platform. Neither is canonical, so a commit carrying it must fail the gate
+# on any ref that is in scope -- and must not be looked at on any ref that isn't.
+BOT_AUTHOR_NAME='dependabot[bot]'
+BOT_AUTHOR_EMAIL='49699333+dependabot[bot]@users.noreply.github.com'
+BOT_COMMITTER_NAME='GitHub'
+BOT_COMMITTER_EMAIL='noreply@github.com'
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -40,6 +53,34 @@ run_case() {
 		printf '  FAIL  %-46s exit %d, wanted %d\n' "$desc" "$got" "$want"
 		fail=$((fail + 1))
 	fi
+}
+
+# run_scope_case <description> <expected exit> -- runs check-identity.sh in $repo
+run_scope_case() {
+	local desc="$1" want="$2"
+	(cd "$repo" && bash "$CHECK") >/dev/null 2>&1
+	local got=$?
+	if [ "$got" -eq "$want" ]; then
+		printf '  ok    %-46s exit %d\n' "$desc" "$got"
+		pass=$((pass + 1))
+	else
+		printf '  FAIL  %-46s exit %d, wanted %d\n' "$desc" "$got" "$want"
+		fail=$((fail + 1))
+	fi
+}
+
+# bot_commit -- adds one commit with bot identity, prints its sha, leaves main
+# where it was. The commit survives only through whatever ref the caller sets.
+bot_commit() {
+	git -C "$repo" checkout -q -b scratch
+	echo 'bump' >> "$repo/file.txt"
+	git -C "$repo" add file.txt
+	GIT_AUTHOR_NAME="$BOT_AUTHOR_NAME" GIT_AUTHOR_EMAIL="$BOT_AUTHOR_EMAIL" \
+	GIT_COMMITTER_NAME="$BOT_COMMITTER_NAME" GIT_COMMITTER_EMAIL="$BOT_COMMITTER_EMAIL" \
+		git -C "$repo" commit -q -m 'Bump a dependency'
+	git -C "$repo" rev-parse HEAD
+	git -C "$repo" checkout -q main
+	git -C "$repo" branch -q -D scratch
 }
 
 # fresh_repo <author name> <author email> -- a repo with one canonical commit
@@ -96,6 +137,42 @@ printf '// %s\n' "$TERM_A" > "$repo/tainted.go"
 git -C "$repo" add -A && git -C "$repo" commit -q -m 'Add a file'
 git -C "$repo" rm -q tainted.go && git -C "$repo" commit -q -m 'Remove a file'
 run_case 'term added then deleted in same push' 1
+
+# --- scope of the server-side check -------------------------------------------
+# The gate's claim is "every commit I wrote carries my identity". A bot's commit
+# on a ref this repository did not author is outside that claim, and treating it
+# as a violation makes the gate unsatisfiable: refs/pull/N/head is permanent, so
+# there would be no action that clears it.
+
+fresh_repo
+run_scope_case 'clean repo passes the scoped check' 0
+
+fresh_repo
+sha="$(bot_commit)"
+git -C "$repo" update-ref refs/remotes/origin/dependabot/bump "$sha"
+run_scope_case 'bot commit on a remote-tracking ref' 0
+
+fresh_repo
+sha="$(bot_commit)"
+git -C "$repo" update-ref refs/pull/1/head "$sha"
+run_scope_case 'bot commit on refs/pull/N/head' 0
+
+# The same commit, one ref namespace over: still a violation.
+fresh_repo
+sha="$(bot_commit)"
+git -C "$repo" update-ref refs/heads/dependabot/bump "$sha"
+run_scope_case 'same bot commit on a local branch' 1
+
+# Guards against "fixing" the scope by narrowing it to main. A topic branch is a
+# branch this clone can push, so it stays in scope -- for identity and for
+# attribution both.
+fresh_repo
+git -C "$repo" checkout -q -b topic
+printf '// %s\n' "$TERM_A" > "$repo/tainted.go"
+git -C "$repo" add tainted.go
+git -C "$repo" commit -q -m 'Add a file'
+git -C "$repo" checkout -q main
+run_scope_case 'forbidden term on a non-main local branch' 1
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
