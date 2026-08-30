@@ -1,5 +1,7 @@
 # Switchyard
 
+[![CI](https://github.com/bezilla/switchyard/actions/workflows/ci.yml/badge.svg)](https://github.com/bezilla/switchyard/actions/workflows/ci.yml)
+
 An AI provider gateway that routes inference across providers and visibly
 survives their failures.
 
