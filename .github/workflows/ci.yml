@@ -80,6 +80,21 @@ jobs:
       - name: identity and attribution over all history
         run: bash scripts/check-identity.sh
 
+      # The self-test runs the real hook, and the hook refuses to pass when
+      # gitleaks is absent -- deliberately, because a secrets gate that skips
+      # when its scanner is missing is not a gate. That fail-closed branch is
+      # what was firing here: the job never had the binary, so the hook's own
+      # good-case test failed for a reason that had nothing to do with history.
+      # The `secrets` job below runs gitleaks as a containerized action, which
+      # never puts it on this job's PATH, so it is installed here directly.
+      - name: install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1   # pinned; a scanner release cannot redden a green branch
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
       - name: prove the pre-push gate still rejects bad history
         run: bash .githooks/selftest.sh
 

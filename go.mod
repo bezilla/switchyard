@@ -2,6 +2,13 @@ module github.com/bezilla/switchyard
 
 go 1.25.0
 
+// A floor, not a ceiling: a newer local toolchain still satisfies it. This
+// exists because govulncheck reports standard-library advisories against the
+// toolchain that built the binary, and 1.25.0 carries 32 of them. Every CI job
+// resolves its Go from this file, so pinning here fixes the scan and the build
+// it is scanning with the same line.
+toolchain go1.25.14
+
 require (
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/otel v1.46.0
