@@ -90,6 +90,28 @@ If you want review before landing, review the branch locally and then push
 
 ---
 
+## Dependabot pull requests are notifications, not merge requests
+
+[`.github/dependabot.yml`](.github/dependabot.yml) opens pull requests for Go
+module and Actions bumps. Read them; never merge them. The rule above has no
+exception for automation — a Dependabot pull request merged from the UI stamps a
+non-canonical committer exactly the same way any other one does.
+
+Treat each one as a notification that an upstream version moved:
+
+1. **Read the changelog** for the bump. Most are routine; some are not.
+2. **If it is worth taking, apply it locally** — `go get`, `go mod tidy`, or edit
+   the workflow pin by hand. Do not fetch and cherry-pick the Dependabot branch;
+   its commits carry Dependabot's identity, and cherry-picking preserves the
+   author field.
+3. **Run `make check`,** then push `main` through the hook like any other change.
+4. **Close the pull request unmerged.** Dependabot will not reopen it once the
+   dependency is already at the target version.
+
+If a bump is not worth taking, close the pull request with a one-line reason.
+
+---
+
 ## Forbidden strings
 
 Assistant-attribution terms — the two vendor names and the `co-auth[o]red`
