@@ -90,25 +90,35 @@ If you want review before landing, review the branch locally and then push
 
 ---
 
-## Dependabot pull requests are notifications, not merge requests
+## Dependency updates are manual, and Dependabot is off
 
-[`.github/dependabot.yml`](.github/dependabot.yml) opens pull requests for Go
-module and Actions bumps. Read them; never merge them. The rule above has no
-exception for automation — a Dependabot pull request merged from the UI stamps a
-non-canonical committer exactly the same way any other one does.
+There is no `dependabot.yml`. That is a decision, not an oversight, and it was
+made after enabling it and watching what happened.
 
-Treat each one as a notification that an upstream version moved:
+A dependency bot cannot land anything here. Its pull requests cannot be merged
+from the UI without stamping a non-canonical committer, and the rule above has
+no exception for automation. So every bump it proposes is hand-work regardless:
+read the change, apply it locally, push `main` through the hook.
 
-1. **Read the changelog** for the bump. Most are routine; some are not.
-2. **If it is worth taking, apply it locally** — `go get`, `go mod tidy`, or edit
-   the workflow pin by hand. Do not fetch and cherry-pick the Dependabot branch;
-   its commits carry Dependabot's identity, and cherry-picking preserves the
-   author field.
-3. **Run `make check`,** then push `main` through the hook like any other change.
-4. **Close the pull request unmerged.** Dependabot will not reopen it once the
-   dependency is already at the target version.
+The deciding cost was not the hand-work, though. Enabling the bot writes commits
+into the repository's ref namespace *without anyone merging anything*. It pushes
+a branch per bump, authored by the bot and committed by the platform, and
+opening a pull request from that branch creates `refs/pull/N/head`, which GitHub
+keeps forever whether the pull request is merged, closed or deleted. Deleting
+the branch does not remove it. Three such refs exist here already and cannot be
+removed; the repository would have to be recreated, which is what happened twice
+before.
 
-If a bump is not worth taking, close the pull request with a one-line reason.
+To update a dependency:
+
+```sh
+go get example.com/mod@vX.Y.Z && go mod tidy
+make check
+git push origin main
+```
+
+`govulncheck` runs in CI on every push, so a dependency with a known advisory
+fails the build. That is the backstop the bot was there to provide.
 
 ---
 
