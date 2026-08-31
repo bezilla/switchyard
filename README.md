@@ -54,8 +54,13 @@ gateway's own OpenTelemetry metrics.
 ## Quickstart
 
 ```sh
-docker compose up
+make up
 ```
+
+Builds and starts the stack detached, then prints where everything is. About ten
+seconds to a serving gateway; the dashboard has a line to draw at roughly twenty
+and looks like a graph by forty. (`docker compose up` works too, but it holds the
+terminal, and every step below wants a prompt.)
 
 Open <http://localhost:3000>. No login — the dashboard is the home page and
 traffic is already flowing. Give it thirty seconds to fill in, then run these in
@@ -64,7 +69,7 @@ order:
 > Ports 3000 and 8080 are the two most contended on a developer machine. If
 > either is taken, set `GRAFANA_PORT`, `SWITCHYARD_PORT` or `PROMETHEUS_PORT`
 > and the make targets will follow:
-> `SWITCHYARD_PORT=8090 docker compose up` then `make state SWITCHYARD_PORT=8090`.
+> `SWITCHYARD_PORT=8090 make up` then `make state SWITCHYARD_PORT=8090`.
 
 ```sh
 make break-apex     # apex starts returning 503s
