@@ -28,7 +28,7 @@ CURL := curl --silent --show-error --fail-with-body
 help: ## Show this help
 	@echo 'Switchyard -- an AI provider gateway that survives its providers'
 	@echo
-	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*21659' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| sort \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
