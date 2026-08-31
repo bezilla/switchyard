@@ -90,6 +90,84 @@ neither, so a dependency can pass probes while failing traffic. The demo turns i
 on so the heal happens on the timescale of someone watching;
 [DESIGN.md](DESIGN.md) has the argument for why you might not want it.
 
+### The loop: watch one request change hands
+
+The dashboard shows failover in aggregate, which is how you watch a fleet and
+not how you understand a single request. This walks one request at a time.
+
+```sh
+make demo
+```
+
+It asks, reads which provider answered, breaks **that** provider, and asks
+again with the same prompt — so the interesting part is not a claim in a README,
+it is two headers that disagree.
+
+By hand, it is three curls. Ask once, and read the headers:
+
+```sh
+curl -sS -D - -o /dev/null -X POST localhost:8080/v1/chat \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"hello","max_tokens":24}' | grep -i '^x-switchyard'
+```
+
+```
+X-Switchyard-Failovers: 0
+X-Switchyard-Policy: failover
+X-Switchyard-Provider: apex
+```
+
+`apex` answered on the first try. Now break exactly that provider:
+
+```sh
+curl -sS -X POST localhost:8080/admin/inject \
+  -H 'content-type: application/json' \
+  -d '{"provider":"apex","mode":"error","rate":1}'
+```
+
+```json
+{"injection": {"mode": "error", "rate": 1}, "provider": "apex"}
+```
+
+Send the **identical** request again — same prompt, same flags, nothing changed
+on the client:
+
+```sh
+curl -sS -D - -o /dev/null -X POST localhost:8080/v1/chat \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"hello","max_tokens":24}' | grep -i '^x-switchyard'
+```
+
+```
+X-Switchyard-Failovers: 1
+X-Switchyard-Policy: failover
+X-Switchyard-Provider: bargain
+```
+
+Still HTTP 200. A different provider, and a failover count that went up. The
+caller never saw the 503, because the response header is written only after some
+provider has accepted the request — until the first byte goes out, the gateway is
+still free to change its mind. That ordering is the whole trick, and it is also
+why mid-stream failover is a genuinely harder problem: see [ROADMAP.md](ROADMAP.md).
+
+The end of the stream carries the same decision, for a client that would rather
+parse the body than the headers:
+
+```sh
+curl -sS -N -X POST localhost:8080/v1/chat \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"hello","max_tokens":24}' | tail -1
+```
+
+```
+data: {"completion_tokens":24,"estimated_cost_usd":0.0000305,"failovers":1,
+       "policy":"failover","prompt_tokens":2,"provider":"bargain","ttft_ms":834}
+```
+
+`make reset` puts everything back.
+
+### The rest of the controls
+
 ```sh
 make ratelimit-bargain   # a healthy provider shedding load; its breaker stays closed
 make slow-apex           # 12x slower and still passing health checks
@@ -182,6 +260,10 @@ Deliberately **not** in v0.1:
 - **No auth, multi-tenancy, retry budgets, or request persistence.** The admin
   endpoints that break things are unauthenticated by design, which alone should
   keep this off anything public.
+
+[ROADMAP.md](ROADMAP.md) covers what comes after v0.1 — streaming failover is
+the headline, and retries and idempotency are the known gaps — and why each one
+is a harder question than it looks.
 
 ## Limitations
 

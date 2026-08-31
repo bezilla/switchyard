@@ -70,6 +70,10 @@ down: ## Stop the stack and remove its containers
 logs: ## Follow the gateway log
 	@docker compose logs -f switchyard
 
+.PHONY: demo
+demo: ## The loop: ask, break whoever answered, ask again, see failover
+	@bash scripts/demo.sh
+
 .PHONY: break-apex
 break-apex: ## Take apex down: watch traffic move and availability hold
 	@$(CURL) -X POST $(GATEWAY)/admin/inject \
