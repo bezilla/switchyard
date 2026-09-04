@@ -302,6 +302,18 @@ occurred"; it would not satisfy that.
 See [DESIGN.md](DESIGN.md) for decisions and rejected alternatives, and
 [CONTRIBUTING.md](CONTRIBUTING.md) before your first commit.
 
+## Contributing
+
+This is a personal portfolio repository, so the contribution model is unusual and
+worth stating plainly: **pull requests are not merged here.** Every commit has to
+carry a single canonical identity that a pre-push hook and a CI job both verify
+over all of history, and every server-side merge mode rewrites the author or the
+committer. Changes land by direct push through that hook instead.
+
+Issues are open and welcome — bug reports, design disagreements and questions all
+belong there, and a patch described in an issue will get read and applied with
+credit. [CONTRIBUTING.md](CONTRIBUTING.md) has the full reasoning.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
