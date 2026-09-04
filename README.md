@@ -31,7 +31,7 @@ few either way between runs; the zero and the 100% do not.
 The provider comes back on a ramp, not a cliff. Admitted traffic climbs:
 
 ```
-0.05  →  0.08  →  0.13  →  0.21  →  0.33  →  0.52  →  0.84  →  closed
+0.05  →  0.08  →  0.13  →  0.20  →  0.33  →  0.52  →  0.84  →  closed
 ```
 
 Roughly six seconds of partial traffic before full. A textbook circuit breaker
@@ -52,6 +52,16 @@ broken.
 
 Nothing in that image is a mock. It is Grafana reading Prometheus, scraping the
 gateway's own OpenTelemetry metrics.
+
+![Grafana breaker admit ratio during recovery: apex drops from 100% to zero when the breaker trips, makes two short failed recovery attempts reaching about 5% and 13% before reopening, then climbs through the middle to 100% and closes](docs/images/grafana-recovery.png)
+
+*The other half of the incident: the `Breaker admit ratio` panel across one break
+and recovery of `apex`, synthetic traffic at 10 req/s. The two small humps near
+21:18:00 and 21:18:15 are recovery attempts that reopened — the ramp starting,
+failing its ratio check and backing off — and the final climb is the one that
+survived to closed. Prometheus scrapes every 5s and a full ramp finishes in about
+6.3s, so a dashboard can only ever resolve a point or two inside it; the exact
+ladder is in the state diagram below, read from the code.*
 
 ## Quickstart
 
@@ -101,6 +111,12 @@ on so the heal happens on the timescale of someone watching;
 
 The dashboard shows failover in aggregate, which is how you watch a fleet and
 not how you understand a single request. This walks one request at a time.
+
+![Terminal recording: one request returns the header X-Switchyard-Provider apex, then make break-apex injects a 503 into apex, then the identical request returns X-Switchyard-Provider bargain with X-Switchyard-Failovers 1](docs/images/demo-loop.gif)
+
+*A real recording, unedited: the same request before and after `make break-apex`.
+`ask` is one `POST /v1/chat` printing only the `X-Switchyard-*` response headers.
+Nothing changes on the client between the two calls — the provider does.*
 
 ```sh
 make demo
@@ -232,6 +248,11 @@ choosing between equivalent upstreams is not making a decision worth watching:
 | `bargain` | ~520 ms | $0.25 in / $1.25 out | 429s past 14 req/s |
 | `local` | ~210 ms | free | refuses once its 6 slots are full |
 
+![Routing architecture: a client sends one POST to the gateway, which orders candidates by policy, asks each breaker whether to admit, and calls Start; apex refuses with unavailable, bargain accepts, and only then are the response headers written naming bargain and one failover](docs/images/routing-architecture.svg)
+
+*One request, two attempts, one header — and the point on the timeline where the
+gateway stops being able to change its mind.*
+
 Three ideas do the work:
 
 **Failover happens before the first token.** Every way a provider can refuse is
@@ -243,6 +264,11 @@ architecture changes that without abandoning streaming.
 shedding load. If 429s tripped its breaker, the breaker would keep traffic away,
 the 429s would stop, and nothing would ever say it was safe to come back. Rate
 limits and capacity refusals trigger failover without counting against health.
+
+![Circuit breaker state machine: Closed trips to Open at a failure ratio of 0.5 over at least 8 requests; Open admits nothing and serves a cooldown that doubles per failed recovery up to 60s; Recovering admits a growing fraction from 0.05 multiplied by 1.6 every 900ms through 0.08, 0.13, 0.20, 0.33, 0.52 and 0.84 before closing; unavailable and timeout count against health while rate limited and capacity do not](docs/images/breaker-state-machine.svg)
+
+*The three states, the admit ladder as the code computes it, and which failure
+classes are allowed to open a circuit. See [DESIGN.md](DESIGN.md#recovery-is-gradual).*
 
 **Health probes break the breaker's circularity.** A breaker that learns only
 from traffic cannot notice that a provider it is avoiding has recovered — it

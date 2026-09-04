@@ -75,6 +75,10 @@ breaker with a classification rule in front of it was the better trade.
 
 ## Recovery is gradual
 
+The three states, the admit ladder and the failure classification are drawn in
+[the breaker state machine](docs/images/breaker-state-machine.svg); every number
+on it is read from `DefaultConfig()` rather than illustrated.
+
 **Decision.** The breaker has three states, and the third is a ramp. On leaving
 `open` it admits 5% of traffic, multiplying by 1.6 every 900 ms of uninterrupted
 success until it reaches 100% and closes. Failures during the ramp send it back
