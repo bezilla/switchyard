@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 700" width="1120" height="700"
+     role="img" aria-labelledby="ttl dsc">
+  <title id="ttl">Circuit breaker states: Closed, Open and Recovering, with the admit ramp and the failure taxonomy</title>
+  <desc id="dsc">Three states. Closed passes all traffic and trips to Open when the rolling failure
+  ratio reaches one half over at least eight requests. Open admits nothing and serves a cooldown that
+  doubles on each failed recovery, capped at sixty seconds. When the cooldown expires the breaker
+  enters Recovering, which admits a growing fraction of traffic: five percent, then multiplied by 1.6
+  every 900 milliseconds, giving 0.05, 0.08, 0.13, 0.20, 0.33, 0.52, 0.84 and then closed, about six
+  seconds in total. A failure ratio at or above the threshold during the ramp sends it back to Open
+  with a longer cooldown. Separately, a failure taxonomy decides what counts: unavailable and timeout
+  push the breaker toward open, while rate limited and capacity refusals do not, because a provider
+  shedding load correctly is not an unhealthy provider.</desc>
+
+  <style>
+    /* Shared portfolio palette. Colour carries meaning, not decoration:
+         own    the healthy, default path
+         opt    the degraded or optional path
+         ext    context that is not the breaker itself
+         pivot  the single most important claim on the page
+       Light is the default so the diagram stays legible where the colour-scheme
+       query does not match the host page. Neither theme uses pure black or white. */
+    :root{
+      --bg:#eef1f6; --panel:#fafbfd; --ink:#1f2937; --dim:#4b5563;
+      --own:#2f6fed; --ext:#5b6675; --opt:#a8570a; --pivot:#7241d6;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg:#141a23; --panel:#1c2531; --ink:#e6eaf1; --dim:#a7b2c2;
+        --own:#74abff; --ext:#98a3b3; --opt:#f0b357; --pivot:#c3a3ff;
+      }
+    }
+    .bg{fill:var(--bg)}
+    text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+         fill:var(--ink)}
+    .h1{font-size:24px;font-weight:700}
+    .h2{font-size:14px;fill:var(--dim)}
+    .zone{font-size:13px;font-weight:700;letter-spacing:.08em}
+    .bt{font-size:17px;font-weight:700}
+    .lbl{font-size:12.5px;fill:var(--dim)}
+    .sm{font-size:11.5px;fill:var(--dim)}
+    .edge{font-size:12px;font-weight:600}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+    .panel{fill:var(--panel)}
+    .own-s{stroke:var(--own);fill:none}
+    .own-f{fill:var(--own);fill-opacity:.07;stroke:var(--own);stroke-opacity:.5}
+    .ext-f{fill:var(--ext);fill-opacity:.08;stroke:var(--ext);stroke-opacity:.5}
+    .opt-f{fill:var(--opt);fill-opacity:.08;stroke:var(--opt);stroke-opacity:.75}
+    .bar{fill:var(--own);fill-opacity:.6}
+    .piv-f{fill:var(--pivot);fill-opacity:.07;stroke:var(--pivot);stroke-opacity:.5}
+    .t-own{fill:var(--own)} .t-ext{fill:var(--ext)} .t-opt{fill:var(--opt)} .t-piv{fill:var(--pivot)}
+    .f-own{fill:var(--own)} .f-opt{fill:var(--opt)} .f-piv{fill:var(--pivot)}
+    .flow{stroke:var(--own);stroke-width:2;fill:none}
+    .flow-opt{stroke:var(--opt);stroke-width:2;fill:none}
+    .flow-piv{stroke:var(--pivot);stroke-width:2;fill:none;stroke-dasharray:3 4}
+    .bound{stroke:var(--ext);stroke-width:2;stroke-dasharray:9 7;fill:none}
+  </style>
+
+  <defs>
+    <marker id="mo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="f-own"/></marker>
+    <marker id="mk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="f-opt"/></marker>
+    <marker id="mp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="f-piv"/></marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1120" height="700" rx="10"/>
+
+  <text class="h1" x="40" y="44">The breaker — a ramp where a textbook breaker has a cliff</text>
+  <text class="h2" x="40" y="68">internal/breaker · defaults from DefaultConfig(); every number below is the code's, not an illustration</text>
+
+  <!-- ===================== CLOSED ===================== -->
+  <rect class="own-f" x="40" y="112" width="252" height="118" rx="10"/>
+  <text class="bt t-own" x="60" y="144">Closed</text>
+  <text class="lbl" x="60" y="167">Every request is admitted.</text>
+  <text class="sm" x="60" y="190">rolling window 10s · 10 buckets</text>
+  <text class="sm" x="60" y="208">no verdict below 8 requests</text>
+
+  <!-- ===================== OPEN ===================== -->
+  <rect class="opt-f" x="434" y="112" width="252" height="118" rx="10"/>
+  <text class="bt t-opt" x="454" y="144">Open</text>
+  <text class="lbl" x="454" y="167">Nothing is admitted.</text>
+  <text class="sm" x="454" y="190">cooldown 5s, doubling per failed</text>
+  <text class="sm" x="454" y="208">recovery, capped at 60s</text>
+
+  <!-- ===================== RECOVERING ===================== -->
+  <rect class="own-f" x="434" y="330" width="606" height="188" rx="10"/>
+  <text class="bt t-own" x="454" y="362">Recovering</text>
+  <text class="lbl" x="454" y="385">A growing fraction is admitted — this is the whole idea.</text>
+  <text class="sm" x="454" y="405">admit ×1.6 every 900ms, from 0.05; reaching 1.0 closes</text>
+
+  <!-- the ramp, drawn to scale -->
+  <g>
+    <text class="sm" x="454" y="432">admitted fraction</text>
+    <rect class="panel" x="454" y="440" width="20" height="46" rx="3"/><rect class="own-s" x="454" y="440" width="20" height="46" rx="3" stroke-opacity=".35"/>
+    <rect class="bar" x="454" y="484" width="20" height="2" rx="1"/>
+    <text class="sm mono" x="464" y="500" text-anchor="middle">0.05</text>
+
+    <rect class="panel" x="512" y="440" width="20" height="46" rx="3"/><rect class="own-s" x="512" y="440" width="20" height="46" rx="3" stroke-opacity=".35"/>
+    <rect class="bar" x="512" y="482" width="20" height="4" rx="1"/>
+    <text class="sm mono" x="522" y="500" text-anchor="middle">0.08</text>
+
+    <rect class="panel" x="570" y="440" width="20" height="46" rx="3"/><rect class="own-s" x="570" y="440" width="20" height="46" rx="3" stroke-opacity=".35"/>
+    <rect class="bar" x="570" y="480" width="20" height="6" rx="1"/>
+    <text class="sm mono" x="580" y="500" text-anchor="middle">0.13</text>
+
+    <rect class="panel" x="628" y="440" width="20" height="46" rx="3"/><rect class="own-s" x="628" y="440" width="20" height="46" rx="3" stroke-opacity=".35"/>
+    <rect class="bar" x="628" y="477" width="20" height="9" rx="1"/>
+    <text class="sm mono" x="638" y="500" text-anchor="middle">0.20</text>
+
+    <rect class="panel" x="686" y="440" width="20" height="46" rx="3"/><rect class="own-s" x="686" y="440" width="20" height="46" rx="3" stroke-opacity=".35"/>
+    <rect class="bar" x="686" y="471" width="20" height="15" rx="1"/>
+    <text class="sm mono" x="696" y="500" text-anchor="middle">0.33</text>
+
+    <rect class="panel" x="744" y="440" width="20" height="46" rx="3"/><rect class="own-s" x="744" y="440" width="20" height="46" rx="3" stroke-opacity=".35"/>
+    <rect class="bar" x="744" y="462" width="20" height="24" rx="1"/>
+    <text class="sm mono" x="754" y="500" text-anchor="middle">0.52</text>
+
+    <rect class="panel" x="802" y="440" width="20" height="46" rx="3"/><rect class="own-s" x="802" y="440" width="20" height="46" rx="3" stroke-opacity=".35"/>
+    <rect class="bar" x="802" y="447" width="20" height="39" rx="1"/>
+    <text class="sm mono" x="812" y="500" text-anchor="middle">0.84</text>
+
+    <rect class="bar" x="860" y="440" width="20" height="46" rx="3"/>
+    <text class="sm mono t-own" x="870" y="500" text-anchor="middle">1.0</text>
+    <text class="edge t-own" x="896" y="468">→ Closed</text>
+    <text class="sm" x="896" y="486">7 steps · ≈6.3s</text>
+  </g>
+
+  <!-- ===================== TRANSITIONS ===================== -->
+  <path class="flow-opt" marker-end="url(#mk)" d="M292 152 H434"/>
+  <text class="edge t-opt" x="300" y="144">trip</text>
+  <text class="sm" x="300" y="176">failure ratio ≥ 0.50</text>
+  <text class="sm" x="300" y="192">over ≥ 8 requests</text>
+
+  <path class="flow" marker-end="url(#mo)" d="M560 230 V330"/>
+  <text class="edge t-own" x="572" y="268">cooldown served</text>
+  <text class="sm" x="572" y="286">admit resets to 0.05</text>
+
+  <path class="flow" marker-end="url(#mo)" d="M434 400 H196 Q166 400 166 370 V242"/>
+  <text class="edge t-own" x="182" y="300">ramp completes</text>
+  <text class="sm" x="182" y="318">admit reaches 1.0</text>
+
+  <path class="flow-opt" marker-end="url(#mk)" d="M700 330 Q700 290 676 268 V230"/>
+  <text class="edge t-opt" x="712" y="292">failure during ramp</text>
+  <text class="sm" x="712" y="310">back to Open, cooldown ×2</text>
+
+  <!-- probe early recovery, off by default -->
+  <path class="flow-piv" marker-end="url(#mp)" d="M498 230 V284 Q498 312 520 320 H540" opacity=".9"/>
+  <text class="sm t-piv" x="352" y="252">2 probe successes</text>
+  <text class="sm t-piv" x="352" y="268">cut the cooldown short</text>
+  <text class="sm t-piv" x="352" y="284">— OFF by default</text>
+
+  <!-- ===================== FAILURE TAXONOMY ===================== -->
+  <path class="bound" d="M40 556 H1080"/>
+  <text class="zone t-ext" x="40" y="590">WHAT COUNTS AS ILL HEALTH</text>
+  <text class="sm" x="40" y="608">provider.FailureKind.CountsAgainstHealth()</text>
+
+  <rect class="opt-f" x="332" y="566" width="330" height="52" rx="8"/>
+  <text class="edge t-opt" x="348" y="588">counts — pushes the breaker toward Open</text>
+  <text class="sm mono" x="348" y="607">unavailable · timeout</text>
+
+  <rect class="ext-f" x="690" y="566" width="390" height="52" rx="8"/>
+  <text class="edge t-ext" x="706" y="588">does not count — fails over, never trips</text>
+  <text class="sm mono" x="706" y="607">rate_limited · capacity</text>
+
+  <text class="lbl" x="40" y="652">A rate-limited provider is working correctly and shedding load. If 429s tripped its breaker, the breaker would keep traffic</text>
+  <text class="lbl" x="40" y="670">away, the 429s would stop, and nothing would ever say it was safe to come back. Both classes still trigger failover.</text>
+</svg>

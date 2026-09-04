@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 660" width="1120" height="660"
+     role="img" aria-labelledby="ttl dsc">
+  <title id="ttl">Routing and failover: the gateway walks candidate providers and names the winner in a response header</title>
+  <desc id="dsc">A client sends one request to the gateway. The gateway orders candidate providers by
+  policy, then walks them: for each it asks the breaker whether to admit, calls Start, and on refusal
+  moves to the next. Apex refuses with an unavailable error, bargain accepts, and the stream is
+  returned. Only then are the response headers written, naming bargain as the provider and one
+  failover. The timeline below shows why this ordering is the whole trick: until the first byte
+  reaches the client the gateway is still free to change its mind, and after it nothing can change.</desc>
+
+  <style>
+    /* Shared portfolio palette — same tokens as the observability and breaker diagrams. */
+    :root{
+      --bg:#eef1f6; --panel:#fafbfd; --ink:#1f2937; --dim:#4b5563;
+      --own:#2f6fed; --ext:#5b6675; --opt:#a8570a; --pivot:#7241d6;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg:#141a23; --panel:#1c2531; --ink:#e6eaf1; --dim:#a7b2c2;
+        --own:#74abff; --ext:#98a3b3; --opt:#f0b357; --pivot:#c3a3ff;
+      }
+    }
+    .bg{fill:var(--bg)}
+    text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+         fill:var(--ink)}
+    .h1{font-size:24px;font-weight:700}
+    .h2{font-size:14px;fill:var(--dim)}
+    .zone{font-size:13px;font-weight:700;letter-spacing:.08em}
+    .bt{font-size:15px;font-weight:600}
+    .lbl{font-size:12.5px;fill:var(--dim)}
+    .sm{font-size:11.5px;fill:var(--dim)}
+    .edge{font-size:12px;font-weight:600}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+    .panel{fill:var(--panel)}
+    .own-s{stroke:var(--own);fill:none}
+    .own-f{fill:var(--own);fill-opacity:.07;stroke:var(--own);stroke-opacity:.5}
+    .ext-f{fill:var(--ext);fill-opacity:.08;stroke:var(--ext);stroke-opacity:.5}
+    .opt-f{fill:var(--opt);fill-opacity:.08;stroke:var(--opt);stroke-opacity:.75}
+    .piv-f{fill:var(--pivot);fill-opacity:.08;stroke:var(--pivot);stroke-opacity:.6}
+    .t-own{fill:var(--own)} .t-ext{fill:var(--ext)} .t-opt{fill:var(--opt)} .t-piv{fill:var(--pivot)}
+    .f-own{fill:var(--own)} .f-ext{fill:var(--ext)} .f-opt{fill:var(--opt)} .f-piv{fill:var(--pivot)}
+    .flow{stroke:var(--own);stroke-width:2;fill:none}
+    .flow-ext{stroke:var(--ext);stroke-width:2;fill:none}
+    .flow-opt{stroke:var(--opt);stroke-width:2;fill:none;stroke-dasharray:7 5}
+    .flow-piv{stroke:var(--pivot);stroke-width:2.5;fill:none}
+    .bound{stroke:var(--ext);stroke-width:2;stroke-dasharray:9 7;fill:none}
+  </style>
+
+  <defs>
+    <marker id="mo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="f-own"/></marker>
+    <marker id="me" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="f-ext"/></marker>
+    <marker id="mk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" class="f-opt"/></marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1120" height="660" rx="10"/>
+
+  <text class="h1" x="40" y="44">Routing — the caller never learns that apex refused</text>
+  <text class="h2" x="40" y="68">internal/router · internal/server · one request, two attempts, one header</text>
+
+  <!-- ===================== CLIENT ===================== -->
+  <text class="zone t-ext" x="40" y="106">CLIENT</text>
+  <rect class="ext-f" x="40" y="120" width="176" height="76" rx="8"/>
+  <text class="bt" x="56" y="146">one POST /v1/chat</text>
+  <text class="sm" x="56" y="166">same prompt, same flags,</text>
+  <text class="sm" x="56" y="183">nothing retried by hand</text>
+
+  <path class="flow-ext" marker-end="url(#me)" d="M216 158 H286"/>
+
+  <!-- ===================== GATEWAY ===================== -->
+  <rect class="own-f" x="298" y="92" width="376" height="220" rx="12"/>
+  <text class="zone t-own" x="316" y="118">GATEWAY · Router.Route()</text>
+
+  <rect class="panel" x="316" y="132" width="340" height="46" rx="7"/>
+  <rect class="own-s" x="316" y="132" width="340" height="46" rx="7"/>
+  <text class="lbl" x="330" y="152">1 · order candidates by policy</text>
+  <text class="sm mono" x="330" y="169">failover: by priority · cost: cheapest first</text>
+
+  <rect class="panel" x="316" y="190" width="340" height="46" rx="7"/>
+  <rect class="own-s" x="316" y="190" width="340" height="46" rx="7"/>
+  <text class="lbl" x="330" y="210">2 · for each candidate: Breaker.Allow()</text>
+  <text class="sm mono" x="330" y="227">open → skip · recovering → admit a fraction</text>
+
+  <rect class="panel" x="316" y="248" width="340" height="46" rx="7"/>
+  <rect class="own-s" x="316" y="248" width="340" height="46" rx="7"/>
+  <text class="lbl" x="330" y="268">3 · Start() — every refusal surfaces here</text>
+  <text class="sm mono" x="330" y="285">before any stream exists</text>
+
+  <!-- ===================== BOUNDARY ===================== -->
+  <path class="bound" d="M700 92 V340"/>
+  <g transform="rotate(-90 700 300)">
+    <text class="zone t-ext" x="700" y="300" text-anchor="middle" dy="-6">PROVIDERS</text>
+    <text class="sm" x="700" y="300" text-anchor="middle" dy="12">simulated</text>
+  </g>
+
+  <!-- ===================== PROVIDERS ===================== -->
+  <rect class="opt-f" x="736" y="112" width="344" height="66" rx="8"/>
+  <text class="bt t-opt" x="752" y="138">apex</text>
+  <text class="sm mono t-opt" x="1064" y="138" text-anchor="end">~90ms · $3 / $15 per Mtok</text>
+  <text class="sm" x="752" y="162">attempt 1 · refuses unavailable — counts against health</text>
+
+  <rect class="own-f" x="736" y="196" width="344" height="66" rx="8"/>
+  <text class="bt t-own" x="752" y="222">bargain</text>
+  <text class="sm mono t-own" x="1064" y="222" text-anchor="end">~520ms · $0.25 / $1.25 per Mtok</text>
+  <text class="sm" x="752" y="246">attempt 2 · accepts — the stream is returned</text>
+
+  <rect class="ext-f" x="736" y="280" width="344" height="56" rx="8"/>
+  <text class="bt" x="752" y="304">local</text>
+  <text class="sm mono" x="1064" y="304" text-anchor="end">free · 6 slots</text>
+  <text class="sm" x="752" y="325">not reached on this request</text>
+
+  <path class="flow-opt" marker-end="url(#mk)" d="M674 145 H736"/>
+  <text class="edge t-opt" x="682" y="137">1</text>
+  <path class="flow" marker-end="url(#mo)" d="M674 229 H736"/>
+  <text class="edge t-own" x="682" y="221">2</text>
+  <path class="flow-opt" d="M760 178 V196" marker-end="url(#mk)"/>
+  <text class="sm t-opt" x="772" y="192">failover</text>
+
+  <!-- ===================== THE ORDERING GUARANTEE ===================== -->
+  <rect class="piv-f" x="40" y="360" width="1040" height="180" rx="12"/>
+  <text class="zone t-piv" x="60" y="388">THE ORDERING GUARANTEE — why the caller sees a clean 200</text>
+
+  <path class="flow-ext" d="M80 448 H1044" marker-end="url(#me)"/>
+  <text class="sm" x="1000" y="470">time</text>
+
+  <g class="mono">
+    <circle cx="150" cy="448" r="5" class="f-ext"/>
+    <text class="sm" x="150" y="432" text-anchor="middle">request in</text>
+
+    <circle cx="330" cy="448" r="5" class="f-opt"/>
+    <text class="sm t-opt" x="330" y="432" text-anchor="middle">apex refuses</text>
+    <text class="sm t-opt" x="330" y="472" text-anchor="middle">no bytes sent</text>
+
+    <circle cx="510" cy="448" r="5" class="f-opt"/>
+    <text class="sm t-opt" x="510" y="432" text-anchor="middle">failover</text>
+    <text class="sm t-opt" x="510" y="472" text-anchor="middle">still reversible</text>
+
+    <circle cx="700" cy="448" r="7" class="f-piv"/>
+    <text class="edge t-piv" x="700" y="410" text-anchor="middle">bargain accepts</text>
+    <text class="sm t-piv" x="700" y="472" text-anchor="middle">headers written HERE</text>
+
+    <circle cx="900" cy="448" r="5" class="f-own"/>
+    <text class="sm t-own" x="900" y="432" text-anchor="middle">first byte out</text>
+    <text class="sm t-own" x="900" y="472" text-anchor="middle">now committed</text>
+  </g>
+
+  <path class="flow-piv" d="M700 418 V440"/>
+
+  <text class="lbl" x="60" y="508">Every way a provider can refuse is surfaced from <tspan class="mono">Start()</tspan>, before a stream exists. Until the first byte reaches the client the</text>
+  <text class="lbl" x="60" y="526">gateway can silently try someone else; after it, it cannot. That is why mid-stream failover is a genuinely harder problem.</text>
+
+  <text class="sm mono t-piv" x="60" y="576">X-Switchyard-Provider: bargain</text>
+  <text class="sm mono t-piv" x="330" y="576">X-Switchyard-Failovers: 1</text>
+  <text class="sm mono t-piv" x="580" y="576">X-Switchyard-Policy: failover</text>
+  <text class="sm" x="830" y="576">— and HTTP 200, once.</text>
+</svg>
