@@ -2,8 +2,10 @@
 
 [![CI](https://github.com/bezilla/switchyard/actions/workflows/ci.yml/badge.svg)](https://github.com/bezilla/switchyard/actions/workflows/ci.yml)
 
-An AI provider gateway that routes inference across providers and visibly
-survives their failures.
+An AI provider gateway that routes inference across simulated providers and
+visibly survives their failures. The simulation is the point: you cannot
+reproducibly break someone else's API, and reproducible failure is what makes
+breaker behavior demonstrable rather than asserted.
 
 The thesis: **AI infrastructure's production problems are the old problems in
 new vocabulary.** Routing, failover, rate limits, quotas, cost, observability —
