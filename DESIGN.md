@@ -263,12 +263,170 @@ State that genuinely depends on timing — the rate-limit bucket, the concurrenc
 count — is deliberately outside the deterministic seed, because those are
 properties of the system under load rather than of the request.
 
-**Rejected: real provider adapters behind a flag.** It would make the project
-about API compatibility, which is tedious and already solved, rather than about
-routing behavior. It also means anyone running the demo needs keys and a budget.
+**Partly reversed: real provider adapters behind a flag.** The original argument
+was that adapters would make this a project about API compatibility rather than
+about routing, and that anyone running the demo would need keys and a budget.
+The first half still holds for *per-vendor* adapters and there are none. The
+second half was answered by a model running on the reader's own machine: one
+generic OpenAI-compatible adapter, opt in, no key. See "One adapter, not one per
+vendor" below. The simulated three stay the default, unchanged, for the reason
+above — nothing else can be broken on demand.
 
 **Rejected: recorded fixtures from real providers.** Realistic latency, and
 fixtures cannot be broken on demand, which is the entire point.
+
+---
+
+## One adapter, not one per vendor
+
+**Decision.** There is a single `provider.Upstream` that speaks the OpenAI chat-
+completions wire format over HTTP, configured by a base URL and a model name.
+Ollama is its first consumer and has no special case anywhere in the code.
+
+**Why.** Ollama, vLLM, LocalAI, llama.cpp's server and most hosted gateways all
+expose the same two routes. One adapter reaches all of them, and adding the next
+one is a config entry rather than a Go file. A vendor-specific adapter would be
+the first of an unbounded set, each with its own quirks to keep working, which is
+exactly the "project about API compatibility" this set out not to be.
+
+**Rejected: an Ollama adapter, with generalization later.** It is one file
+either way, and the generic version is the one that makes the second endpoint
+free. It also keeps the demo honest: the interesting claim is that the router
+does not know which of its providers do network I/O, and an adapter named after
+one vendor invites the reader to assume otherwise.
+
+**Rejected: putting the API key in the config file.** `api_key_env` names an
+environment variable instead. A config file is a thing people commit, and a
+secret scanner is a poor substitute for there being nowhere to put the secret.
+
+---
+
+## Start waits for the first token, over the network
+
+**Decision.** `Upstream.Start` issues the request, checks the status, and then
+reads forward to the first content token before returning a `Stream`. The token
+is buffered and handed back on the first `Next`.
+
+**Why.** The failover boundary is "every way a provider can refuse must surface
+from `Start`". Over a network that is harder than it sounds, because the most
+common way real inference degrades is not a 503 — it is a 200, headers out, and
+then nothing. A saturated model server accepts the connection immediately and
+thinks for forty seconds. If `Start` returned as soon as the status line looked
+good, that would become a stream that hangs: the header naming the provider is
+already out, the request is committed, and the gateway has lost the ability to
+reroute exactly when it most needed it.
+
+Reading to the first token buys the distinction, and it costs nothing that was
+not going to be spent: time to first token is time to first token whether it is
+spent inside `Start` or inside the first `Next`. What changes is only whether
+the request is still reroutable while it elapses.
+
+Past that token the stream is judged on the gap between tokens instead. A stall
+there is a failed request rather than a reroutable one — the same rule the
+simulated providers live under, and the reason streaming failover is a v0.2
+question rather than a v0.1 feature.
+
+**Rejected: a client-wide HTTP timeout.** One deadline cannot mean both "you had
+long enough to start" and "you had long enough to finish". A completion
+legitimately runs for minutes; a first token legitimately does not. A single
+timeout large enough for the first is useless for the second.
+
+**Rejected: returning the stream immediately and classifying the stall in
+`Next`.** Simpler, and it moves the failure to the side of the line where
+nothing can be done about it.
+
+---
+
+## A real provider needs a concurrency cap more than a rate limit
+
+**Decision.** `max_concurrent` on an upstream, defaulting to 2 in the shipped
+config, enforced before the request is sent. Exceeding it is `KindCapacity`:
+fails over, does not count against health.
+
+**Why.** This is the one setting that most changes how a local model behaves in
+a routing table. A hosted API is elastic and pushes back with 429s; a model on
+one machine is a fixed-size box, and admitting ten concurrent requests to it does
+not make it serve ten — it makes all ten slow. That is the same shape as the
+simulated `local` provider's six slots, which is not a coincidence: the simulated
+provider was modeled on this case before there was a real one to check it
+against.
+
+Checking the cap before the network matters too. A refusal that costs a round
+trip is a refusal that made the outage slightly worse.
+
+**Rejected: queue instead of refuse.** A queue in front of a full box converts a
+capacity problem into a latency problem, and hides it from the router, which is
+the one component positioned to send the request somewhere with room.
+
+---
+
+## The OpenAI-compatible endpoint does not stream, and says so
+
+**Decision.** `POST /v1/chat/completions` accepts the OpenAI request shape and
+returns the OpenAI response shape, non-streaming. A request carrying
+`"stream": true` is refused with a 400 naming `POST /v1/chat`, which does stream.
+
+**Why ship half of it at all.** The value of "OpenAI-compatible" is that an
+existing client can be pointed at the gateway by changing a base URL. Most
+programmatic use — evaluations, batch jobs, anything that parses the result
+before showing it to anyone — does not need tokens as they are made. That half is
+worth shipping on its own.
+
+**Why the explicit refusal is the whole argument.** The danger of a half-
+compatible endpoint is not the missing half; it is a missing half that is silent.
+A caller that sends `stream: true`, receives one JSON object at the end, and gets
+no error has been misled about latency, about memory, and about which of the
+gateway's guarantees applied to its request. It will find out in production. An
+explicit 400 costs that caller one clear message and no illusions, and it is
+also honest about the state of the work: streaming here waits on the same
+question [ROADMAP.md](ROADMAP.md) has to answer for v0.2.
+
+**Rejected: silently ignoring `stream`.** The failure mode above.
+
+**Rejected: not shipping the endpoint until it streams.** The non-streaming half
+is independently useful and its behavior is fully specified. Withholding it buys
+nothing except a smaller changelog.
+
+**Rejected: retrying mid-completion on this endpoint because it buffers anyway.**
+Tempting: nothing has been written to the client, so a provider that dies at
+token forty could be re-run elsewhere and nobody would know. It was rejected
+because it would give this endpoint a different reliability contract from
+`/v1/chat` — better on paper, and a second behavior to document, test, and
+reason about on a dashboard that cannot tell the two endpoints apart. Uniform
+routing was worth more than the wider guarantee on one route.
+
+---
+
+## Third-party references are pinned to immutable identifiers
+
+**Decision.** GitHub Actions by full commit SHA, container images by digest,
+`govulncheck` and `golangci-lint` by version. Renovate keeps the pins current
+and is configured to open no branches and no pull requests.
+
+**Why.** A tag is a mutable pointer in somebody else's repository. `actions/
+checkout@v5` resolves to whatever its owner last moved `v5` to, which means a
+compromised or merely changed action lands here on the next run with no diff in
+this repository to explain it. Same for `prom/prometheus:v3.7.3`, which can be
+repushed, and for `govulncheck@latest`, which can turn a green build red between
+two runs of the same commit — indistinguishable from a real finding until
+someone goes looking for a diff that does not exist.
+
+The tag is kept in a comment beside every pin, because a bare digest tells a
+reader nothing about what it is.
+
+**Why Renovate writes only an issue.** Pinning is the easy half; a pin nobody
+updates is a pin that is three advisories old. But a bot that opens a pull
+request creates `refs/pull/N/head`, which GitHub keeps permanently whether the
+pull request is merged, closed or deleted. `dependencyDashboardApproval` makes
+"no branches" structural rather than a promise: nothing is created until a
+checkbox is ticked, and the workflow is to read the dashboard and apply the
+change by hand.
+
+**Rejected: Dependabot.** Same ref-namespace cost, and no equivalent of the
+approval-gated dashboard.
+
+**Rejected: pinning without a bot.** That is the state this was in, and it is
+the state where pins quietly rot.
 
 ---
 
@@ -417,10 +575,10 @@ change to the default load reintroduces it.
 serving at full rate alongside bargain, which is not failover — it is
 duplication.
 
-## Identity enforcement is in two places
+## The commit gate is in two places
 
 **Decision.** A `pre-push` hook checks every outgoing commit; a CI job checks
-every commit in history.
+every commit in history. They enforce the same rules.
 
 **Why.** `core.hooksPath` is per-clone configuration. It does not survive a
 clone, so a fresh clone has the hook file on disk and no hook installed. `make
@@ -429,25 +587,14 @@ a step a human forgets.
 
 The hook is the fast local copy: it catches the mistake before it becomes
 permanent, which matters because identity is baked into the commit hash and
-GitHub's `refs/pull/N/head` is permanent. The CI job is the copy nobody can
+GitHub keeps `refs/pull/N/head` forever. The CI job is the copy nobody can
 forget to install.
 
 **Rejected: hook only.** One forgotten `make init` and the guarantee is gone.
 
 **Rejected: CI only.** By the time CI runs, the commit exists on a remote. For
-identity, that is already too late.
+anything baked into a commit hash, that is already too late.
 
-Both check the same three things: author and committer on every commit, no
-attribution strings in any commit message, and no attribution strings in any
-tree at any commit — not just the tip, because a term introduced in one commit
-and deleted in the next is still in the history a clone can read.
-
----
-
-## Direct push, never a merge button
-
-Documented in [CONTRIBUTING.md](CONTRIBUTING.md), and the short version is that
-every server-side merge mode rewrites at least one identity field. Squash sets
-the platform's `noreply` address as committer; rebase and merge stamp the
-account identity. None produce the canonical identity, and the pre-push hook
-cannot object because the platform performed the write, not the clone.
+The consequence for how changes land — direct push, never the merge button — is
+in [CONTRIBUTING.md](CONTRIBUTING.md), and the operational detail is in
+[docs/maintainer-notes.md](docs/maintainer-notes.md).

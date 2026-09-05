@@ -7,6 +7,10 @@ visibly survives their failures. The simulation is the point: you cannot
 reproducibly break someone else's API, and reproducible failure is what makes
 breaker behavior demonstrable rather than asserted.
 
+The simulated providers are the default and stay the default. An opt-in profile
+adds a real model running on your own machine, behind the same router — see
+[Optional: routing to a real model](#optional-routing-to-a-real-model).
+
 The thesis: **AI infrastructure's production problems are the old problems in
 new vocabulary.** Routing, failover, rate limits, quotas, cost, observability —
 the concerns CDNs and load balancers settled two decades ago, wearing different
@@ -226,6 +230,8 @@ The make targets above are thin wrappers over this HTTP surface:
 | endpoint | what it does |
 |---|---|
 | `POST /v1/chat` | streams a completion; response headers name the provider chosen |
+| `POST /v1/chat/completions` | the OpenAI-compatible shape, non-streaming; same routing, same headers |
+| `GET /v1/models` | the routable providers, in the shape a client library expects |
 | `GET /metrics` | Prometheus exposition |
 | `GET /admin/state` | routing, breaker and health state as JSON |
 | `POST /admin/inject` | `{"provider":"apex","mode":"error\|ratelimit\|slow\|healthy","rate":1}` |
@@ -236,6 +242,182 @@ The make targets above are thin wrappers over this HTTP surface:
 
 None of these are authenticated. That is deliberate for a demo and is reason
 enough on its own not to expose this anywhere public.
+
+## Optional: routing to a real model
+
+Everything above is simulated, deliberately. This part is not.
+
+An opt-in compose profile starts [Ollama](https://ollama.com) alongside the
+stack and puts a real model in the routing table as the **primary** provider,
+with the three simulated ones behind it as its failover path. No account, no
+key, no spend, no network egress past the model download.
+
+```sh
+make up-ollama      # the stack, plus a local model on :11434
+make ask            # one real request, answered by that model
+make break-ollama   # stop it for real; watch the circuit open and traffic move
+make heal-ollama    # start it again; watch the same admit ramp close it
+```
+
+`make up-ollama` is `docker compose --profile ollama up` with one variable set —
+the profile decides which services exist, not what the gateway's environment
+says, so the gateway still has to be told where its upstream is:
+
+```sh
+SWITCHYARD_UPSTREAMS=@/etc/switchyard/upstreams/ollama.json   docker compose --profile ollama up --build -d
+```
+
+### It is not an Ollama adapter
+
+The adapter is generic: one OpenAI-compatible client, pointed at a base URL.
+Ollama is its first consumer and gets no special case in the code. vLLM, LocalAI,
+llama.cpp's server or any hosted endpoint that speaks
+`POST {base}/chat/completions` and `GET {base}/models` works by copying
+[`deploy/upstreams/ollama.json`](deploy/upstreams/ollama.json) and changing
+`base_url` and `model`:
+
+```json
+[{ "name": "vllm", "base_url": "http://vllm:8000/v1", "model": "...", "priority": 5,
+   "max_concurrent": 2, "start_timeout": "60s" }]
+```
+
+An `api_key_env` field names an environment variable to read a bearer token
+from. There is deliberately nowhere to put the key itself.
+
+### The same guarantees, or it would be decoration
+
+A real provider is a `provider.Provider` like any other, so it gets the same
+router, the same breaker and the same failure taxonomy. That claim is checked
+rather than asserted: `TestRealProviderTripsTheBreakerExactlyAsASimulatedOneDoes`
+runs one scenario twice — once against a simulated 503, once against a live HTTP
+server that returns 200 and then never sends a token — and requires the two
+observed sequences of routing outcomes to be *equal*.
+
+Observed on the running stack, with the real model as primary:
+
+```
+ask                        X-Switchyard-Provider: ollama    failovers: 0    "Red"
+docker compose stop ollama
+ask (identical request)    X-Switchyard-Provider: apex      failovers: 1
+admin/state                ollama  open        admit=0     probe=unavailable
+docker compose start ollama
+  t+60s                    ollama  recovering  admit=0.52
+  t+75s                    ollama  closed      admit=1     recoveries=1
+```
+
+That `admit=0.52` is the same geometric ladder at the top of this README — 0.05
+multiplied by 1.6 per interval — caught partway up, on a provider that is
+actually a model on a machine rather than a simulation of one.
+
+Three things are worth knowing about how the adapter earns that:
+
+- **`Start` does not return until the first token arrives.** An upstream that
+  accepts the connection, returns 200 and then thinks for forty seconds is the
+  most common way real inference degrades, and it is indistinguishable from a
+  healthy one until the first token. Waiting for that token inside `Start` is
+  what keeps the failure reroutable — and it costs nothing, because the token is
+  buffered and handed back on the first `Next`.
+- **A real 429 does not open a circuit.** Same rule as the simulated case: a
+  provider shedding load is working correctly.
+- **`max_concurrent` matters more than anything else here.** One model on one
+  machine serves one or two requests at a time. Over the cap the gateway refuses
+  with a capacity error, which fails over instantly and does *not* count against
+  health. With the default 10 req/s of synthetic load and a cap of 2, most
+  requests are capacity-refused by `ollama` and served by `apex` — a constant
+  background of failovers that is the taxonomy working, not an incident.
+
+### What to expect on a laptop, honestly
+
+The profile defaults to `qwen2.5:0.5b`, about 400 MB, because it is small enough
+to demo without turning the page into a progress bar. It is a 0.5-billion
+parameter model: it answers, and it is frequently wrong about what it answered.
+That is fine here — the claim being demonstrated is *where the request went*, not
+whether the completion is any good. Anything past about 3B parameters works and
+is not worth watching.
+
+Measured on an 8-core M1 laptop, both paths:
+
+| | host `ollama serve` (Metal) | container (CPU only) |
+|---|---|---|
+| one short answer through the gateway | **0.63 s** | **1.4 s** |
+| generation rate | ~12 ms/token | ~300 ms/token |
+| model load, cold | ~10 s | ~22 s |
+
+Three things about the container path are worth knowing before you run it:
+
+- **The `ollama/ollama` image is about 7 GB.** It carries GPU runtimes for
+  hardware you may not have. That is a real cost for an optional demo, and it is
+  most of why this profile is opt-in rather than on.
+- **Docker Desktop on macOS has no GPU passthrough.** `ollama ps` inside the
+  container reports `100% CPU`. It works and it is roughly 25× slower per token
+  than the same model on the host. On Linux the container is the fast path.
+- **The model is loaded at startup, not on the first request.** The one-shot
+  `ollama-pull` service pulls the weights *and* loads them into memory before the
+  gateway starts, and `OLLAMA_KEEP_ALIVE` stops them being evicted while idle.
+  Without that the first real request pays for a cold load: measured at over two
+  minutes, which blew the 60 s start budget and was correctly recorded as a
+  timeout and failed over. A true report of a model that was not ready, and a
+  terrible first impression. `make up-ollama` takes about 50 seconds instead.
+
+**Expect most traffic to fail over, and expect that to be correct.** With the
+default 10 req/s of synthetic load and two slots, the real model is busy almost
+all the time: completions run to 256 tokens, which is tens of seconds of one
+slot. Everything else is capacity-refused and served by `apex` in microseconds,
+availability holds at 100%, and `ollama`'s circuit stays closed throughout —
+a full box is not a broken box. To watch the real model answer *your* request
+rather than a synthetic one, quiet the load first:
+
+```sh
+curl -sS -X POST localhost:8080/admin/traffic   -H 'content-type: application/json' -d '{"rps":0}'
+make ask
+make normal-traffic
+```
+
+**On macOS, prefer the host path.** It skips the 7 GB image entirely, uses Metal,
+and needs no profile — the model server just is not a compose service:
+
+```sh
+OLLAMA_HOST=0.0.0.0 ollama serve &        # on the host
+ollama pull qwen2.5:0.5b
+SWITCHYARD_UPSTREAMS=@/etc/switchyard/upstreams/ollama-host.json   docker compose up --build -d
+```
+
+[`deploy/upstreams/ollama-host.json`](deploy/upstreams/ollama-host.json) is the
+same upstream pointed at `host.docker.internal`.
+
+### Why the default is still simulated
+
+Reproducible failure injection is what makes the failover claim checkable. You
+cannot reproducibly break someone else's service, and there is no
+`admin/inject` for a real provider — `make break-ollama` stops the container,
+because that is the only honest way to break something that is actually running.
+The simulated three are never removed and never downgraded.
+
+## The OpenAI-compatible endpoint
+
+```sh
+curl -sS localhost:8080/v1/chat/completions   -H 'content-type: application/json'   -d '{"model":"default","messages":[{"role":"user","content":"hello"}],"max_tokens":60}'
+```
+
+The response is the shape a client library expects, plus the routing decision in
+both the headers and the body:
+
+```json
+{ "object": "chat.completion",
+  "choices": [{ "index": 0, "message": {"role": "assistant", "content": "..."},
+                "finish_reason": "stop" }],
+  "usage": {"prompt_tokens": 52, "completion_tokens": 60, "total_tokens": 112},
+  "switchyard": {"provider": "ollama", "policy": "failover", "failovers": 0} }
+```
+
+**It does not stream, and it says so.** A request carrying `"stream": true` is
+refused with a 400 that names `POST /v1/chat` — which does stream — rather than
+quietly returning one object at the end. The danger of a half-compatible
+endpoint is not the missing half, it is a caller that asks for something, appears
+to be given it, and finds out later: a client that wanted tokens as they were
+made and got a single blob has been misled about latency, about memory, and
+about what the gateway's failover guarantee covered on its behalf. Streaming here
+is a [v0.2 item](ROADMAP.md) that waits on the same question v0.2 has to answer.
 
 ## How it works
 
@@ -282,9 +464,11 @@ Deliberately **not** in v0.1:
 - **No custom frontend.** Grafana is the interface. No React, no bespoke UI, no
   incident-timeline view. Dashboards are checked-in JSON, provisioned from disk,
   reviewable in a diff.
-- **No real provider adapters.** No vendor SDKs, no API keys, no network egress.
-  That would make this a project about API compatibility, which is tedious and
-  already solved.
+- **No vendor SDKs and no paid API keys.** There is one generic OpenAI-compatible
+  adapter and an opt-in profile that points it at a model running on your own
+  machine — see [Optional: routing to a real model](#optional-routing-to-a-real-model).
+  What is still deliberately absent is a per-vendor adapter for each hosted API,
+  which would make this a project about API compatibility rather than routing.
 - **No LLM analysis layer.** Nothing here asks a model to explain an incident.
 - **No Kubernetes mode**, no operator, no Helm chart.
 - **No trace backend in the stack.** Spans are instrumented throughout and
@@ -330,15 +514,10 @@ See [DESIGN.md](DESIGN.md) for decisions and rejected alternatives, and
 
 ## Contributing
 
-This is a personal portfolio repository, so the contribution model is unusual and
-worth stating plainly: **pull requests are not merged here.** Every commit has to
-carry a single canonical identity that a pre-push hook and a CI job both verify
-over all of history, and every server-side merge mode rewrites the author or the
-committer. Changes land by direct push through that hook instead.
-
-Issues are open and welcome — bug reports, design disagreements and questions all
-belong there, and a patch described in an issue will get read and applied with
-credit. [CONTRIBUTING.md](CONTRIBUTING.md) has the full reasoning.
+Solo repository: changes land by direct push with CI enforced, and pull requests
+are not merged here. Issues are open and welcome — bug reports, design
+disagreements and questions all belong there, and a patch described in an issue
+gets read and applied with credit. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

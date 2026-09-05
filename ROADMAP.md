@@ -55,6 +55,25 @@ anyone". Naming it is the current state of the work.
 
 ---
 
+## v0.2 — streaming on the OpenAI-compatible endpoint
+
+`POST /v1/chat/completions` ships non-streaming and refuses `"stream": true`
+with a 400 rather than answering it in one piece. That is a deliberate refusal,
+not an oversight: a caller that asks for streaming and silently receives a single
+object has been misled about latency, about memory, and about which guarantees
+applied to its request.
+
+Implementing it is not the hard part — it is the same server-sent event loop
+`POST /v1/chat` already runs, in OpenAI's chunk envelope. What it waits on is the
+question above: once tokens are out, a provider that dies mid-completion cannot
+be rerouted, and the OpenAI wire format has no vocabulary for "this response is
+complete and also truncated". Whatever v0.2 decides a caller should be handed on
+a mid-stream failure, this endpoint has to hand them the same thing in a shape
+their client library will not silently discard. Shipping the loop before that is
+settled would mean choosing the answer by accident.
+
+---
+
 ## Known gaps
 
 Not scheduled, and non-trivial for reasons worth stating.
@@ -79,6 +98,13 @@ that real providers implement it inconsistently, or not at all.
 ## Not planned
 
 The [Scope](README.md#scope) section of the README lists what v0.1 deliberately
-excludes — no custom frontend, no real provider adapters, no LLM analysis layer,
-no Kubernetes mode, no auth. Those are decisions rather than gaps, and nothing
-above changes them.
+excludes — no custom frontend, no per-vendor provider adapters, no LLM analysis
+layer, no Kubernetes mode, no auth. Those are decisions rather than gaps, and
+nothing above changes them.
+
+One of them moved. "No real provider adapters" is now one *generic*
+OpenAI-compatible adapter and an opt-in profile pointing it at a model on your
+own machine. What stays excluded is a per-vendor adapter for each hosted API,
+and the simulated providers stay the default: reproducible failure injection is
+what makes the failover claim checkable, and nobody can reproducibly break
+somebody else's service.
