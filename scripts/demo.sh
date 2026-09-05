@@ -54,6 +54,22 @@ inject() { # provider mode
 		-d "{\"provider\":\"$1\",\"mode\":\"$2\",\"rate\":1}" >/dev/null
 }
 
+# Whether a provider can be broken from the admin API at all. Only the simulated
+# ones can: a real upstream is a process somewhere, and the gateway has no
+# business pretending it can inject a fault into something it does not own.
+injectable() { # provider
+	curl --silent --fail "$GATEWAY/admin/state" 2>/dev/null |
+		python3 -c '
+import json, sys
+name = sys.argv[1]
+for p in json.load(sys.stdin)["providers"]:
+    if p["name"] == name:
+        # Providers that accept injected faults report an injection block.
+        sys.exit(0 if p.get("injection") is not None else 1)
+sys.exit(1)
+' "$1"
+}
+
 # --- preflight ----------------------------------------------------------------
 curl --silent --fail --max-time 3 "$GATEWAY/healthz" >/dev/null 2>&1 ||
 	fail "no gateway at $GATEWAY. Start it with 'make up' (or 'go run ./cmd/switchyard'), then rerun."
@@ -65,9 +81,11 @@ say "${dim}Same prompt every time. The only thing that changes is who can serve 
 step '1. Reset every provider to healthy, policy back to primary-first.'
 cmd "make reset"
 for p in apex bargain local; do inject "$p" healthy; done
+# Real upstreams are not in that list and are not reset: their health is a fact
+# about a process, not a setting.
 curl --silent --show-error -X POST "$GATEWAY/admin/policy" \
 	-H 'content-type: application/json' -d '{"policy":"failover"}' >/dev/null
-say "   all three providers healthy."
+say "   all simulated providers healthy."
 
 # --- 2. ask ------------------------------------------------------------------
 step '2. Send one request. The response headers name who served it.'
@@ -84,6 +102,26 @@ say ""
 say "   ${bold}${first}${reset} answered, with ${failovers} failover(s)."
 
 # --- 3. break exactly that provider ------------------------------------------
+#
+# Under the ollama profile the provider that answered may be a real model, which
+# has no injection endpoint and should not have one. Say so and stop, rather
+# than failing on an HTTP 400 that reads like a broken script.
+if ! injectable "$first"; then
+	say ""
+	say "${yellow}${first} is a real upstream, not a simulated one.${reset}"
+	say "There is no admin/inject for it, and that is deliberate: the gateway does"
+	say "not own that process and cannot reproducibly break it. Breaking it means"
+	say "actually stopping it:"
+	say ""
+	say "    make break-ollama     # then rerun: make demo"
+	say ""
+	say "Rerunning as-is often works too: a real model holds its few slots for"
+	say "seconds at a time, so the next request usually finds them busy and is"
+	say "answered by a simulated provider instead."
+	say ""
+	exit 0
+fi
+
 step "3. Break ${first} -- the one that just answered. It now returns 503 to every call."
 cmd "curl -sS -X POST $GATEWAY/admin/inject -H 'content-type: application/json' \\"
 cmd "     -d '{\"provider\":\"${first}\",\"mode\":\"error\",\"rate\":1}'"

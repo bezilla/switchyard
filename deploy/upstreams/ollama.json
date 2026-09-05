@@ -1,0 +1,26 @@
+[
+  {
+    "name": "ollama",
+
+    "//base_url": "Any OpenAI-compatible root works here. Point it at a vLLM or LocalAI container in the same compose network and nothing else on this page changes.",
+    "base_url": "http://ollama:11434/v1",
+    "model": "qwen2.5:0.5b",
+
+    "//priority": "Ahead of apex (10), so the real model is the primary and the simulated fleet is its failover path. Raise it above 30 to make the real model the last resort instead.",
+    "priority": 5,
+
+    "//max_concurrent": "The most important number here. A local model serves one or two requests at a time; admitting ten makes all ten slow rather than making any of them fast. Over the cap the gateway refuses with a capacity error, which fails over and does NOT count against health -- a full box is not a broken box.",
+    "max_concurrent": 2,
+
+    "//start_timeout": "Connect, response headers and first token together. Generous because the first request after a cold start pays for loading weights into memory; past this the attempt is a timeout, which does count against health.",
+    "start_timeout": "60s",
+    "idle_timeout": "30s",
+    "probe_timeout": "3s",
+
+    "//rates": "Zero, and that is the truth rather than a placeholder: a model on your own hardware is not metered per token. The cost panel will show the spend rate fall when traffic moves here.",
+    "rates": {
+      "prompt_usd_per_mtok": 0,
+      "completion_usd_per_mtok": 0
+    }
+  }
+]

@@ -4,8 +4,9 @@
 #              make up       (the demo)
 #
 # The failure-injection targets below are the demo. They post to the gateway's
-# admin endpoint; nothing about them is privileged, and none of them touch a
-# real provider because there are no real providers.
+# admin endpoint; nothing about them is privileged, and by default none of them
+# touch a real provider, because by default there are no real providers. The
+# `ollama` profile adds one; see up-ollama.
 
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -22,6 +23,11 @@ GRAFANA ?= http://localhost:$(GRAFANA_PORT)
 # Pinned tool versions. Renovate proposes bumps on the dependency dashboard;
 # see renovate.json5 for why it never opens a pull request to do it.
 GOVULNCHECK_VERSION ?= v1.7.0
+
+# The opt-in real-provider path. UPSTREAMS points at a file inside the gateway
+# container, mounted read-only from ./deploy/upstreams.
+OLLAMA_MODEL ?= qwen2.5:0.5b
+OLLAMA_UPSTREAMS ?= @/etc/switchyard/upstreams/ollama.json
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 # curl, quiet, failing the make target on an HTTP error rather than printing
@@ -54,6 +60,11 @@ init: ## Step 1 for any clone: install the pre-push gate
 test-hook: ## Prove the pre-push gate rejects bad history
 	@bash .githooks/selftest.sh
 
+# Pushing to main when its required checks have not run yet is a hand
+# procedure, written down in docs/maintainer-notes.md. There is deliberately no
+# target for it: the two steps that carry its whole safety are the ones a target
+# would encourage skipping.
+
 # ── the demo ──────────────────────────────────────────────────────────────────
 
 .PHONY: up
@@ -66,9 +77,45 @@ up: ## Start the stack: gateway, Prometheus, Grafana on :3000
 	@echo
 	@echo 'Traffic is already flowing. Try: make break-apex'
 
+.PHONY: up-ollama
+up-ollama: ## Start the stack with a real local model as the primary provider
+	@# Two things the bare `docker compose --profile ollama up` cannot do on its
+	@# own: a profile decides which services exist, not what another service's
+	@# environment says, so the gateway still has to be told where the upstream
+	@# is. Everything here is one variable and the profile.
+	@SWITCHYARD_VERSION=$(VERSION) \
+		SWITCHYARD_UPSTREAMS='$(OLLAMA_UPSTREAMS)' \
+		OLLAMA_MODEL='$(OLLAMA_MODEL)' \
+		docker compose --profile ollama up --build -d
+	@echo
+	@echo 'Grafana:    $(GRAFANA)'
+	@echo 'Gateway:    $(GATEWAY)   (primary provider: ollama, model $(OLLAMA_MODEL))'
+	@echo
+	@echo 'The three simulated providers are still there, behind it, as the'
+	@echo 'failover path. Try: make ask, then make break-ollama'
+
+.PHONY: break-ollama
+break-ollama: ## Take the real model down for real: stop its container
+	@# There is no admin/inject for a real provider, and that is the point --
+	@# you cannot reproducibly break somebody else's service, which is the
+	@# whole argument for the simulated three. Breaking this one means actually
+	@# stopping it.
+	@docker compose --profile ollama stop ollama
+	@echo 'ollama is gone. Its probe fails, its circuit opens within a few'
+	@echo 'seconds, and traffic moves to apex. Watch the breaker panel.'
+
+.PHONY: heal-ollama
+heal-ollama: ## Start the real model again and watch its circuit close
+	@docker compose --profile ollama start ollama
+	@echo 'ollama is back. The breaker will not hand it everything at once:'
+	@echo 'watch the admit ratio ramp, exactly as it does for a simulated one.'
+
 .PHONY: down
 down: ## Stop the stack and remove its containers
-	@docker compose down --remove-orphans
+	@# --profile ollama so this also stops the opt-in services when they are
+	@# running. The named volume holding the model weights is kept: `down`
+	@# should not cost a gigabyte of download to undo.
+	@docker compose --profile ollama down --remove-orphans
 
 .PHONY: logs
 logs: ## Follow the gateway log

@@ -1,5 +1,15 @@
 # The whole demo: gateway, scraper, dashboards. `docker compose up` and open
 # http://localhost:3000 -- traffic is already flowing and no login is asked for.
+#
+# Images are pinned by digest, not by tag. A tag is a mutable pointer in
+# somebody else's registry: prom/prometheus:v3.7.3 can be repushed, and the
+# rebuild that picks up the new bytes has no diff in this file to explain it.
+# The tag is kept alongside the digest because a bare digest tells a reader
+# nothing about what it is. Renovate keeps the pair in step (renovate.json5).
+#
+# The `ollama` profile is off by default and adds a real, local, OpenAI-
+# compatible model server. See the README: the default stack is deterministic
+# on purpose, and that is not something a real model can be.
 
 name: switchyard
 
@@ -25,6 +35,21 @@ services:
       SWITCHYARD_RPS: "${SWITCHYARD_RPS:-10}"
       SWITCHYARD_POLICY: "${SWITCHYARD_POLICY:-failover}"
       SWITCHYARD_SEED: "${SWITCHYARD_SEED:-1}"
+
+      # Real OpenAI-compatible upstreams, as JSON or @path. Empty by default:
+      # the three simulated providers are the whole routing table unless
+      # somebody asks for more. `make up-ollama` sets this to the checked-in
+      # ollama config; any other endpoint is another file in the same place.
+      SWITCHYARD_UPSTREAMS: "${SWITCHYARD_UPSTREAMS:-}"
+    volumes:
+      - ./deploy/upstreams:/etc/switchyard/upstreams:ro
+    depends_on:
+      # Only meaningful under the ollama profile. required:false makes this a
+      # no-op when the profile is off, which is what keeps the default stack a
+      # three-service stack that starts in ten seconds.
+      ollama-pull:
+        condition: service_completed_successfully
+        required: false
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
       interval: 5s
@@ -34,7 +59,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v3.7.3
+    image: prom/prometheus:v3.7.3@sha256:49214755b6153f90a597adcbff0252cc61069f8ab69ce8411285cd4a560e8038
     container_name: switchyard-prometheus
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
@@ -53,7 +78,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:12.3.1
+    image: grafana/grafana:12.3.1@sha256:2175aaa91c96733d86d31cf270d5310b278654b03f5718c59de12a865380a31f
     container_name: switchyard-grafana
     ports:
       - "${GRAFANA_PORT:-3000}:3000"
@@ -81,3 +106,73 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
+
+  # ── the ollama profile: a real model, opt in ────────────────────────────────
+  #
+  # Started only by `--profile ollama`. Nothing here is required to run the
+  # demo, nothing here needs an account or a key, and nothing about the three
+  # simulated providers changes when it is running: they stay in the routing
+  # table as the failover path behind it.
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:0.33.3@sha256:32931b46719f673c05fdbaa81ccb26da18ea4a1c57590a754874ab28ba269eb2
+    container_name: switchyard-ollama
+    ports:
+      # Published so the host can talk to the same server the gateway does,
+      # which is how you tell "the model is slow" from "the gateway is slow".
+      - "${OLLAMA_PORT:-11434}:11434"
+    environment:
+      # Ollama unloads an idle model after five minutes by default. Loading it
+      # back costs tens of seconds on CPU, and a demo that has been sitting on
+      # a slide for six minutes would pay that on the next request -- as a
+      # timeout, a failover, and a tripped circuit that all describe the model
+      # being asleep rather than broken.
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-1h}"
+    volumes:
+      # Weights are large and slow to fetch. Keeping them in a named volume
+      # means `make down` does not cost another download.
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  ollama-pull:
+    profiles: ["ollama"]
+    image: ollama/ollama:0.33.3@sha256:32931b46719f673c05fdbaa81ccb26da18ea4a1c57590a754874ab28ba269eb2
+    container_name: switchyard-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: "http://ollama:11434"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:0.5b}"
+    # A one-shot the gateway waits for, and it does two things.
+    #
+    # `pull` fetches the weights, so the first request meets a model that is
+    # present rather than a 404 waited out through a breaker cooldown.
+    #
+    # `run MODEL ""` then loads those weights into memory without generating
+    # anything. That second step is not decoration: a cold load of even a
+    # 0.5B model takes tens of seconds on CPU, and without it the first real
+    # request pays for it inside the gateway's start budget. Measured on an
+    # M1 laptop, that first request took over two minutes, blew the 60s
+    # budget, and was correctly recorded as a timeout and failed over -- a
+    # true report of a model that was not ready, and a terrible first
+    # impression. Paying the load here moves it to startup, where compose is
+    # already waiting and nobody is holding a request.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        ollama pull "$${OLLAMA_MODEL}"
+        ollama run "$${OLLAMA_MODEL}" "" >/dev/null 2>&1
+        echo "ready: $${OLLAMA_MODEL} pulled and resident"
+    restart: "no"
+
+volumes:
+  ollama-models:

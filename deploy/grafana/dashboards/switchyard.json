@@ -740,8 +740,8 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "Local provider: streams open against capacity",
-      "description": "The free provider is a fixed-size box, not an elastic service. When the open-stream line reaches the capacity line it refuses rather than queues, which is why cost routing cannot simply pin everything to the cheapest option.",
+      "title": "Capacity-limited providers: streams open against capacity",
+      "description": "A capacity-limited provider is a fixed-size box, not an elastic service. When its open-stream line reaches its capacity line it refuses rather than queues, which is why cost routing cannot simply pin everything to the cheapest option. Shows every provider that declares a cap, so a real upstream configured with max_concurrent appears here beside the simulated local one -- and for a real local model that cap is the setting that most changes its behavior in the routing table.",
       "datasource": {
         "type": "prometheus",
         "uid": "switchyard-prom"
@@ -759,8 +759,8 @@
             "uid": "switchyard-prom"
           },
           "editorMode": "code",
-          "expr": "switchyard_provider_inflight{provider=\"local\"}",
-          "legendFormat": "open streams",
+          "expr": "switchyard_provider_inflight and on(provider) (switchyard_provider_capacity > 0)",
+          "legendFormat": "{{provider}} open streams",
           "range": true,
           "refId": "A"
         },
@@ -770,8 +770,8 @@
             "uid": "switchyard-prom"
           },
           "editorMode": "code",
-          "expr": "switchyard_provider_capacity{provider=\"local\"}",
-          "legendFormat": "capacity",
+          "expr": "switchyard_provider_capacity > 0",
+          "legendFormat": "{{provider}} capacity",
           "range": true,
           "refId": "B"
         }
@@ -823,8 +823,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "capacity"
+              "id": "byRegexp",
+              "options": ".*capacity"
             },
             "properties": [
               {

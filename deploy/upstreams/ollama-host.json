@@ -1,0 +1,19 @@
+[
+  {
+    "name": "ollama",
+
+    "//": "The same upstream as ollama.json, pointed at an Ollama already running on the host instead of at the compose service. Use this on macOS: Docker Desktop has no GPU passthrough, so the containerized model runs on CPU, while a host Ollama uses Metal. It also skips a 7 GB image pull. Start the host server with OLLAMA_HOST=0.0.0.0 ollama serve, then run the normal `make up` -- no profile needed, because the model server is not a compose service in this arrangement.",
+    "base_url": "http://host.docker.internal:11434/v1",
+    "model": "qwen2.5:0.5b",
+
+    "priority": 5,
+    "max_concurrent": 2,
+    "start_timeout": "60s",
+    "idle_timeout": "30s",
+    "probe_timeout": "3s",
+    "rates": {
+      "prompt_usd_per_mtok": 0,
+      "completion_usd_per_mtok": 0
+    }
+  }
+]
