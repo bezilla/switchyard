@@ -18,6 +18,10 @@ export SWITCHYARD_PORT GRAFANA_PORT PROMETHEUS_PORT
 
 GATEWAY ?= http://localhost:$(SWITCHYARD_PORT)
 GRAFANA ?= http://localhost:$(GRAFANA_PORT)
+
+# Pinned tool versions. Renovate proposes bumps on the dependency dashboard;
+# see renovate.json5 for why it never opens a pull request to do it.
+GOVULNCHECK_VERSION ?= v1.7.0
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 # curl, quiet, failing the make target on an HTTP error rather than printing
@@ -193,7 +197,10 @@ vet: ## Run go vet and check formatting
 
 .PHONY: vuln
 vuln: ## Check dependencies for known vulnerabilities
-	@go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	@# Pinned, and the same version CI runs. @latest lets the scanner change
+	@# between two runs of the same commit, which turns a green build red with
+	@# no diff to point at.
+	@go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 .PHONY: leaks
 leaks: ## Scan the full history for secrets

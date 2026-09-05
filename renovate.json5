@@ -1,0 +1,81 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+
+  // Why this file exists
+  // --------------------
+  // Every third-party reference in this repository is pinned to an immutable
+  // identifier: actions by commit SHA, container images by digest, tools by
+  // version. Pinning is the easy half. A pin nobody updates is a pin that is
+  // three CVEs old, and the reason people float tags in the first place is
+  // that pinning by hand does not survive contact with a real week.
+  //
+  // Renovate closes that loop: it watches the upstreams, resolves the new
+  // immutable identifier, and tells this repository about it.
+
+  extends: [
+    'config:recommended',
+    // Resolve every tag to a digest and keep both, which is what makes the
+    // pins in docker-compose.yml, the Dockerfile and the workflows current
+    // rather than merely fixed.
+    'docker:pinDigests',
+    'helpers:pinGitHubActionDigests',
+  ],
+
+  timezone: 'America/Denver',
+  schedule: ['before 9am on monday'],
+
+  // No branches, no pull requests, ever
+  // -----------------------------------
+  // This is a solo repository whose commits all have to carry one identity,
+  // and every server-side merge mode rewrites at least one identity field --
+  // so an automation that lands code through the merge button cannot be used
+  // here regardless of how good its diffs are.
+  //
+  // The stronger reason is what a bot costs before anything is merged.
+  // Opening a pull request creates refs/pull/N/head, which GitHub keeps
+  // permanently whether the pull request is merged, closed or deleted:
+  // deleting the branch does not remove it, and the repository would have to
+  // be recreated to. So the bot must never open one.
+  //
+  // dependencyDashboardApproval makes that structural rather than a promise.
+  // Renovate creates no branch and no pull request until a checkbox is ticked
+  // in the dashboard issue. Left unticked, the only artifact it ever writes is
+  // that one issue, and the workflow is: read the dashboard, apply the change
+  // locally, push through the hook.
+  dependencyDashboard: true,
+  dependencyDashboardApproval: true,
+  dependencyDashboardTitle: 'Dependency dashboard: pending pins',
+
+  // Group the pins by what they are, so the dashboard reads as three decisions
+  // rather than a dozen lines.
+  packageRules: [
+    {
+      matchManagers: ['github-actions'],
+      groupName: 'github actions',
+    },
+    {
+      matchManagers: ['dockerfile', 'docker-compose'],
+      groupName: 'container images',
+    },
+    {
+      matchManagers: ['gomod'],
+      groupName: 'go modules',
+      // go.mod's `go` and `toolchain` lines are set deliberately: the floor
+      // exists so govulncheck scans the toolchain that actually builds the
+      // binary. A bot moving them would undo an argument written down in
+      // go.mod itself.
+      matchDepTypes: ['require', 'indirect'],
+    },
+    {
+      matchManagers: ['gomod'],
+      matchDepNames: ['go', 'toolchain'],
+      enabled: false,
+    },
+  ],
+
+  // Advisories are the one thing worth knowing about off-schedule. They still
+  // do not open a pull request; they move to the top of the dashboard.
+  vulnerabilityAlerts: {
+    schedule: ['at any time'],
+  },
+}

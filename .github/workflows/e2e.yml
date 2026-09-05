@@ -17,7 +17,7 @@ jobs:
     # slow runner into a red build.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # Starts the real stack, injects a real failure, and asserts on numbers
       # that must have changed: bargain served at least N more requests than

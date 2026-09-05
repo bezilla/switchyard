@@ -1,3 +1,9 @@
+# Actions are pinned by full commit SHA, not by tag. A tag is a mutable pointer
+# in somebody else's repository: v5 moves whenever its owner moves it, and an
+# action that is compromised or simply changed lands here on the next run with
+# no diff in this file. A SHA is the artifact itself. The trailing comment is
+# the human-readable version the SHA resolved to when it was written; Renovate
+# updates both together (see renovate.json5).
 name: CI
 
 on:
@@ -13,9 +19,9 @@ jobs:
     name: build · vet · test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod   # tracks go.mod; cannot drift from it
           cache: true
@@ -40,12 +46,12 @@ jobs:
     name: golangci-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.13.1  # pinned so a lint release cannot redden a green branch
 
@@ -53,15 +59,20 @@ jobs:
     name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
       # Reports only vulnerabilities on a call path this code actually reaches,
       # so a CVE in an unused corner of a dependency does not stop the world.
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        # Pinned, for the same reason the actions above are. @latest also means
+        # the scanner can change between two runs of the same commit, so a
+        # green build turns red without anything in this repository moving --
+        # which is indistinguishable from a real finding until someone reads
+        # the diff that does not exist.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
   identity:
     name: identity
@@ -70,7 +81,7 @@ jobs:
       # The whole history, not a shallow clone: this job's entire job is to
       # check every commit that exists, and the default fetch-depth of 1 would
       # let it pass by only ever looking at one.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -102,11 +113,11 @@ jobs:
     name: gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: gitleaks over full history
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
           GITLEAKS_ENABLE_SUMMARY: "false"

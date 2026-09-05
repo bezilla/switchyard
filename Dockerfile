@@ -1,6 +1,11 @@
 # Build and runtime are separate stages so the shipped image carries the binary
 # and nothing else: no toolchain, no module cache, no source.
-FROM golang:1.25-alpine AS build
+#
+# Both base images are pinned by digest. A tag is a mutable pointer in somebody
+# else's registry, and "the build changed and nothing in git did" is the exact
+# class of problem a lockfile exists to prevent. The tag stays next to the
+# digest so a reader can see what it is; Renovate updates the pair together.
+FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
 
 WORKDIR /src
 
@@ -17,7 +22,7 @@ RUN CGO_ENABLED=0 go build \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/switchyard ./cmd/switchyard
 
-FROM alpine:3.22
+FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 
 # wget is in busybox already and is what the compose healthcheck uses; adding
 # ca-certificates keeps an OTLP endpoint over TLS working if one is configured.
