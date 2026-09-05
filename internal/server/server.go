@@ -59,6 +59,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /v1/chat", s.handleChat)
+	mux.HandleFunc("POST /v1/chat/completions", s.handleOpenAIChat)
+	mux.HandleFunc("GET /v1/models", s.handleOpenAIModels)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.tel.Registry, promhttp.HandlerOpts{}))
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
@@ -72,9 +74,10 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// chatRequest is the gateway's request shape. It is deliberately not any
-// vendor's schema: pretending to be a drop-in for a real API would promise
-// compatibility this does not have.
+// chatRequest is the gateway's native request shape: one prompt, streamed back
+// as server-sent events. The OpenAI-compatible shape lives on
+// /v1/chat/completions and is a translation layer over the same router; this
+// one stays because it streams, and that endpoint does not.
 type chatRequest struct {
 	Model     string `json:"model"`
 	Prompt    string `json:"prompt"`
@@ -134,9 +137,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// single bad request rather than an aggregate.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Switchyard-Provider", decision.Provider)
-	w.Header().Set("X-Switchyard-Policy", string(decision.Policy))
-	w.Header().Set("X-Switchyard-Failovers", fmt.Sprint(decision.Failovers))
+	s.openAIRoutingHeaders(w, decision)
 
 	flusher, canFlush := w.(http.Flusher)
 	var ttft time.Duration
@@ -214,15 +215,21 @@ func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 
 // providerState is one provider's line in the admin snapshot.
 type providerState struct {
-	Name      string             `json:"name"`
-	Priority  int                `json:"priority"`
-	Breaker   any                `json:"breaker"`
-	Injection provider.Injection `json:"injection"`
-	Rates     provider.Rates     `json:"rates"`
-	LastProbe string             `json:"last_probe"`
-	ProbedAgo string             `json:"probed_ago,omitempty"`
-	Inflight  int                `json:"inflight"`
-	Capacity  int                `json:"capacity"`
+	Name      string              `json:"name"`
+	Priority  int                 `json:"priority"`
+	Breaker   any                 `json:"breaker"`
+	Injection *provider.Injection `json:"injection,omitempty"`
+	Rates     provider.Rates      `json:"rates"`
+	LastProbe string              `json:"last_probe"`
+	ProbedAgo string              `json:"probed_ago,omitempty"`
+	Inflight  int                 `json:"inflight"`
+	Capacity  int                 `json:"capacity"`
+
+	// Model is set only for real upstreams, and names what they were pointed
+	// at. Which model answered is the first thing anyone asks when a real
+	// provider is in the routing table, and it is not derivable from the
+	// provider name.
+	Model string `json:"model,omitempty"`
 }
 
 // handleState returns everything the make targets and the e2e test need to
@@ -255,8 +262,16 @@ func (s *Server) handleState(w http.ResponseWriter, _ *http.Request) {
 		} else if !at.IsZero() {
 			ps.ProbedAgo = time.Since(at).Truncate(time.Millisecond).String()
 		}
+		// Only providers that accept injected faults report an injection at
+		// all. A real upstream showing an empty injection block would read as
+		// "healthy, nothing injected" rather than "this is not a thing you can
+		// break from here", and those are different facts.
 		if inj, ok := t.Provider.(Injector); ok {
-			ps.Injection = inj.Injection()
+			cur := inj.Injection()
+			ps.Injection = &cur
+		}
+		if m, ok := t.Provider.(interface{ Model() string }); ok {
+			ps.Model = m.Model()
 		}
 		if sim, ok := t.Provider.(interface {
 			Inflight() int

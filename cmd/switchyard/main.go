@@ -44,6 +44,8 @@ func run() error {
 		probeTimeout = flag.Duration("probe-timeout", envDuration("SWITCHYARD_PROBE_TIMEOUT", 2*time.Second), "health probe timeout")
 		earlyRecover = flag.Bool("probe-early-recovery", envBool("SWITCHYARD_PROBE_EARLY_RECOVERY", false),
 			"let two passing health probes cut an open circuit's cooldown short (demo affordance; see DESIGN.md)")
+		upstreams = flag.String("upstreams", envString("SWITCHYARD_UPSTREAMS", ""),
+			"OpenAI-compatible upstreams as JSON, or @path to a file holding it; empty means simulated providers only")
 	)
 	flag.Parse()
 
@@ -77,6 +79,37 @@ func run() error {
 		{Provider: provider.Apex(*seed), Priority: 10, Breaker: breaker.New(breakerCfg)},
 		{Provider: provider.Bargain(*seed), Priority: 20, Breaker: breaker.New(breakerCfg)},
 		{Provider: provider.Local(*seed), Priority: 30, Breaker: breaker.New(breakerCfg)},
+	}
+
+	// Real upstreams are added to the same target list, with the same breaker
+	// configuration, behind the same router. Nothing downstream of here knows
+	// which providers do network I/O -- that is the point of the exercise, and
+	// it is also the only way the failover behavior demonstrated on simulated
+	// providers is evidence about anything else.
+	//
+	// The simulated three are never removed. Reproducible failure injection is
+	// what makes the failover claim checkable, and you cannot reproducibly
+	// break somebody else's service.
+	upstreamCfgs, err := provider.LoadUpstreams(*upstreams)
+	if err != nil {
+		return err
+	}
+	built, err := provider.BuildUpstreams(upstreamCfgs, []string{"apex", "bargain", "local"})
+	if err != nil {
+		return err
+	}
+	for i, up := range built {
+		targets = append(targets, &router.Target{
+			Provider: up,
+			Priority: upstreamCfgs[i].Priority,
+			Breaker:  breaker.New(breakerCfg),
+		})
+		log.Info("upstream configured",
+			"provider", up.Name(),
+			"base_url", upstreamCfgs[i].BaseURL,
+			"model", up.Model(),
+			"priority", upstreamCfgs[i].Priority,
+			"max_concurrent", up.Capacity())
 	}
 
 	rt := router.New(policy, tel.Observer(), targets...)

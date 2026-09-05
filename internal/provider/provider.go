@@ -25,6 +25,13 @@ type Request struct {
 	// counts, so identical prompts cost identically on a given provider.
 	Prompt string
 
+	// Messages is the chat transcript, when the caller supplied one. It is
+	// optional: a request that arrives as a bare prompt has none, and a
+	// provider that cannot use roles ignores it either way. Prompt always
+	// carries the flattened equivalent, so routing, token estimation and the
+	// simulated providers never have to care which form the caller used.
+	Messages []Message
+
 	// MaxTokens caps the completion length.
 	MaxTokens int
 
