@@ -41,6 +41,13 @@ services:
       # somebody asks for more. `make up-ollama` sets this to the checked-in
       # ollama config; any other endpoint is another file in the same place.
       SWITCHYARD_UPSTREAMS: "${SWITCHYARD_UPSTREAMS:-}"
+
+      # How long the load generator waits for one completion. Thirty seconds
+      # fits the simulated providers with room to spare. A real model on a CPU
+      # needs far more -- a 250-token answer at 300ms per token runs past a
+      # minute -- and a budget under that abandons long completions just short
+      # of success, measuring the deadline instead of the provider.
+      SWITCHYARD_REQUEST_TIMEOUT: "${SWITCHYARD_REQUEST_TIMEOUT:-30s}"
     volumes:
       - ./deploy/upstreams:/etc/switchyard/upstreams:ro
     depends_on:

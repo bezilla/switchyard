@@ -46,6 +46,8 @@ func run() error {
 			"let two passing health probes cut an open circuit's cooldown short (demo affordance; see DESIGN.md)")
 		upstreams = flag.String("upstreams", envString("SWITCHYARD_UPSTREAMS", ""),
 			"OpenAI-compatible upstreams as JSON, or @path to a file holding it; empty means simulated providers only")
+		reqTimeout = flag.Duration("request-timeout", envDuration("SWITCHYARD_REQUEST_TIMEOUT", 30*time.Second),
+			"how long one synthetic request may take before the load generator gives up on it")
 	)
 	flag.Parse()
 
@@ -120,7 +122,9 @@ func run() error {
 	health := router.NewHealthChecker(rt, *probeEvery, *probeTimeout)
 	go health.Run(ctx)
 
-	gen := loadgen.New(rt, tel, log, loadgen.Config{RPS: *rps, Seed: *seed})
+	gen := loadgen.New(rt, tel, log, loadgen.Config{
+		RPS: *rps, Seed: *seed, RequestTimeout: *reqTimeout,
+	})
 	go gen.Run(ctx)
 
 	srv := &http.Server{

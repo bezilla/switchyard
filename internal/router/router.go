@@ -332,9 +332,24 @@ type gatedStream struct {
 func (g *gatedStream) Next(ctx context.Context) (provider.Chunk, error) {
 	chunk, err := g.Stream.Next(ctx)
 	if err != nil && !errors.Is(err, io.EOF) {
-		g.mu.Lock()
-		g.failed = true
-		g.mu.Unlock()
+		// A caller that goes away -- disconnects, or runs out of its own
+		// deadline -- says nothing about the provider. Counting it as ill
+		// health is the same mistake as counting a 429: it pushes a circuit
+		// open against an upstream that did exactly what it was asked, and
+		// then keeps traffic away from it on that evidence.
+		//
+		// It stays a failed request either way. The caller did not get an
+		// answer, and the SLO should say so. What it must not do is change
+		// the routing decision for the next caller, who has their own budget
+		// and may be perfectly happy to wait.
+		//
+		// This only becomes visible with a provider slow enough for a client
+		// to give up on, which no simulated provider is.
+		if ctx.Err() == nil {
+			g.mu.Lock()
+			g.failed = true
+			g.mu.Unlock()
+		}
 	}
 	return chunk, err
 }

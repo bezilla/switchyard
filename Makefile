@@ -28,6 +28,9 @@ GOVULNCHECK_VERSION ?= v1.7.0
 # container, mounted read-only from ./deploy/upstreams.
 OLLAMA_MODEL ?= qwen2.5:0.5b
 OLLAMA_UPSTREAMS ?= @/etc/switchyard/upstreams/ollama.json
+# A real model on a CPU takes far longer per completion than any simulated one.
+# See the note in docker-compose.yml.
+OLLAMA_REQUEST_TIMEOUT ?= 180s
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 # curl, quiet, failing the make target on an HTTP error rather than printing
@@ -85,6 +88,7 @@ up-ollama: ## Start the stack with a real local model as the primary provider
 	@# is. Everything here is one variable and the profile.
 	@SWITCHYARD_VERSION=$(VERSION) \
 		SWITCHYARD_UPSTREAMS='$(OLLAMA_UPSTREAMS)' \
+		SWITCHYARD_REQUEST_TIMEOUT='$(OLLAMA_REQUEST_TIMEOUT)' \
 		OLLAMA_MODEL='$(OLLAMA_MODEL)' \
 		docker compose --profile ollama up --build -d
 	@echo

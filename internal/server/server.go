@@ -4,7 +4,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -148,9 +147,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
+			// Any way the caller's context ended -- a disconnect, or a
+			// deadline they set -- is the caller going away rather than the
+			// provider failing, and is excluded from the SLO on that basis.
 			outcome := telemetry.OutcomeStreamError
-			if errors.Is(ctx.Err(), context.Canceled) {
+			if ctx.Err() != nil {
 				outcome = telemetry.OutcomeCanceled
+			} else {
+				s.log.Warn("stream failed mid-completion",
+					"provider", decision.Provider, "error", err.Error(),
+					"elapsed", time.Since(started).Round(time.Millisecond).String())
 			}
 			s.tel.RecordRequest(ctx, decision, outcome, time.Since(started), stream.Usage(), ttft)
 			// The header is already out, so the only honest way to signal

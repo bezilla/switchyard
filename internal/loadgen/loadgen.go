@@ -40,8 +40,9 @@ type Generator struct {
 	// provider at once, cannot grow goroutines without limit. Requests over
 	// the bound are recorded as shed rather than queued: a load generator that
 	// silently queues stops measuring what you asked it to measure.
-	maxInflight int
-	inflight    atomic.Int64
+	maxInflight    int
+	inflight       atomic.Int64
+	requestTimeout time.Duration
 
 	prompts []string
 	rng     *rand.Rand
@@ -58,6 +59,11 @@ type Config struct {
 
 	// Seed makes prompt selection reproducible.
 	Seed uint64
+
+	// RequestTimeout bounds one synthetic request end to end. Defaults to 30
+	// seconds, which fits the simulated providers and does not fit a real
+	// model running on a CPU: see the note at its use.
+	RequestTimeout time.Duration
 }
 
 // New builds a generator.
@@ -68,12 +74,16 @@ func New(r *router.Router, tel *telemetry.Telemetry, log *slog.Logger, cfg Confi
 	if cfg.MaxInflight <= 0 {
 		cfg.MaxInflight = 256
 	}
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = 30 * time.Second
+	}
 	g := &Generator{
-		router:      r,
-		tel:         tel,
-		log:         log,
-		maxInflight: cfg.MaxInflight,
-		prompts:     prompts,
+		router:         r,
+		tel:            tel,
+		log:            log,
+		maxInflight:    cfg.MaxInflight,
+		requestTimeout: cfg.RequestTimeout,
+		prompts:        prompts,
 		// The seed is a uint64 everywhere else because it is an opaque label
 		// rather than a quantity; reinterpreting its bits here is the whole
 		// conversion, and no value is lost.
@@ -171,7 +181,14 @@ func (g *Generator) one(ctx context.Context) {
 	// A per-request deadline, because a request that never ends is
 	// indistinguishable from a provider that never answers, and only one of
 	// those should hold a slot forever.
-	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	//
+	// It is configurable because the right value depends on what is upstream.
+	// Against the simulated providers a completion is a few seconds and thirty
+	// is generous. Against a real model on a CPU it is not: a 250-token answer
+	// at 300ms per token runs past a minute, and a budget shorter than that
+	// abandons every long completion just before it succeeds -- measuring the
+	// deadline rather than the provider.
+	rctx, cancel := context.WithTimeout(ctx, g.requestTimeout)
 	defer cancel()
 
 	started := time.Now()
@@ -194,9 +211,19 @@ func (g *Generator) one(ctx context.Context) {
 			break
 		}
 		if err != nil {
+			// rctx, not ctx: the per-request budget lives on rctx, and a
+			// request killed by its own deadline is this generator giving up
+			// rather than the provider failing. Reading the parent context
+			// here classified every abandoned completion as a stream error,
+			// which counted a slow-but-working provider against the SLO.
 			outcome := telemetry.OutcomeStreamError
-			if errors.Is(ctx.Err(), context.Canceled) {
+			if rctx.Err() != nil {
 				outcome = telemetry.OutcomeCanceled
+			}
+			if outcome == telemetry.OutcomeStreamError {
+				g.log.Warn("stream failed mid-completion",
+					"provider", decision.Provider, "error", err.Error(),
+					"elapsed", time.Since(started).Round(time.Millisecond).String())
 			}
 			g.tel.RecordRequest(ctx, decision, outcome, time.Since(started), stream.Usage(), ttft)
 			return

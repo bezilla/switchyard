@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -221,9 +220,13 @@ func (s *Server) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			outcome := telemetry.OutcomeStreamError
 			status := http.StatusBadGateway
-			if errors.Is(ctx.Err(), context.Canceled) {
+			if ctx.Err() != nil {
 				outcome = telemetry.OutcomeCanceled
 				status = 499 // client closed request; nothing will read it
+			} else {
+				s.log.Warn("stream failed mid-completion",
+					"provider", decision.Provider, "error", err.Error(),
+					"elapsed", time.Since(started).Round(time.Millisecond).String())
 			}
 			s.tel.RecordRequest(ctx, decision, outcome, time.Since(started), stream.Usage(), ttft)
 			// Nothing has been written yet, so unlike the streaming endpoint

@@ -213,3 +213,131 @@ func TestRealRateLimitFailsOverWithoutOpeningTheCircuit(t *testing.T) {
 		t.Errorf("breaker is %q after twenty real 429s, want closed: a rate limit is not ill health", got)
 	}
 }
+
+// slowStream serves one chunk and then takes longer than the caller is willing
+// to wait. It stands in for a real model on loaded hardware: working, and
+// slower than somebody's deadline.
+type slowStream struct {
+	gap     time.Duration
+	emitted int
+}
+
+func (s *slowStream) Next(ctx context.Context) (provider.Chunk, error) {
+	if s.emitted == 0 {
+		s.emitted++
+		return provider.Chunk{Text: "first ", Index: 0}, nil
+	}
+	select {
+	case <-ctx.Done():
+		return provider.Chunk{}, &provider.Failure{
+			Provider: "slow", Kind: provider.KindTimeout, Message: "context canceled mid-stream",
+		}
+	case <-time.After(s.gap):
+		s.emitted++
+		return provider.Chunk{Text: "late ", Index: s.emitted - 1}, nil
+	}
+}
+
+func (s *slowStream) Usage() provider.Usage { return provider.Usage{CompletionTokens: s.emitted} }
+func (s *slowStream) Close() error          { return nil }
+
+type slowProvider struct{ gap time.Duration }
+
+func (p *slowProvider) Name() string                { return "slow" }
+func (p *slowProvider) Rates() provider.Rates       { return provider.Rates{} }
+func (p *slowProvider) Probe(context.Context) error { return nil }
+func (p *slowProvider) Start(context.Context, provider.Request) (provider.Stream, error) {
+	return &slowStream{gap: p.gap}, nil
+}
+
+// A caller that runs out of its own deadline must not push the provider's
+// circuit toward open. It is the same error as counting a 429 against health:
+// the provider did exactly what it was asked, and shunning it on that evidence
+// keeps traffic away from something that was working.
+//
+// This is invisible with simulated providers, which are always fast enough that
+// no caller gives up on them. It took a real model on a CPU to surface it.
+func TestCallerGivingUpDoesNotCountAgainstTheProvider(t *testing.T) {
+	cfg := breaker.DefaultConfig()
+	br := breaker.New(cfg)
+	rt := New(PolicyFailover, nil,
+		&Target{Provider: &slowProvider{gap: time.Minute}, Priority: 10, Breaker: br},
+	)
+
+	// Well past MinRequests, so a wrongly-counted failure would certainly trip.
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		stream, _, err := rt.Route(ctx, provider.Request{Prompt: "hi", MaxTokens: 8})
+		if err != nil {
+			cancel()
+			t.Fatalf("request %d: routing failed: %v", i, err)
+		}
+		// Read until the caller's deadline kills it mid-stream.
+		for {
+			if _, err := stream.Next(ctx); err != nil {
+				break
+			}
+		}
+		_ = stream.Close()
+		cancel()
+	}
+
+	if got := br.State().String(); got != "closed" {
+		t.Errorf("breaker is %q after twenty callers timed out on their own deadlines, want closed: "+
+			"the provider was working, and the callers gave up", got)
+	}
+	if s := br.Stats(); s.Failures != 0 {
+		t.Errorf("breaker recorded %d failure(s) from caller cancellations, want 0", s.Failures)
+	}
+}
+
+// The other half: when the provider genuinely breaks mid-stream and the caller
+// is still waiting, that must still count.
+func TestProviderFailingMidStreamStillCountsAgainstIt(t *testing.T) {
+	cfg := breaker.DefaultConfig()
+	br := breaker.New(cfg)
+	rt := New(PolicyFailover, nil,
+		&Target{Provider: &brokenMidStreamProvider{}, Priority: 10, Breaker: br},
+	)
+
+	for i := 0; i < 12; i++ {
+		stream, _, err := rt.Route(context.Background(), provider.Request{Prompt: "hi", MaxTokens: 8})
+		if err != nil {
+			break
+		}
+		for {
+			if _, err := stream.Next(context.Background()); err != nil {
+				break
+			}
+		}
+		_ = stream.Close()
+	}
+
+	if got := br.State().String(); got == "closed" {
+		t.Error("breaker stayed closed while the provider broke every stream mid-completion")
+	}
+}
+
+type brokenMidStreamProvider struct{}
+
+func (p *brokenMidStreamProvider) Name() string                { return "breaks" }
+func (p *brokenMidStreamProvider) Rates() provider.Rates       { return provider.Rates{} }
+func (p *brokenMidStreamProvider) Probe(context.Context) error { return nil }
+func (p *brokenMidStreamProvider) Start(context.Context, provider.Request) (provider.Stream, error) {
+	return &brokenMidStream{}, nil
+}
+
+type brokenMidStream struct{ emitted int }
+
+func (s *brokenMidStream) Next(context.Context) (provider.Chunk, error) {
+	if s.emitted == 0 {
+		s.emitted++
+		return provider.Chunk{Text: "first ", Index: 0}, nil
+	}
+	return provider.Chunk{}, &provider.Failure{
+		Provider: "breaks", Kind: provider.KindUnavailable, Message: "upstream died mid-stream",
+	}
+}
+
+func (s *brokenMidStream) Usage() provider.Usage { return provider.Usage{} }
+func (s *brokenMidStream) Close() error          { return nil }
