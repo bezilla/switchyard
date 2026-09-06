@@ -88,7 +88,7 @@ jobs:
       # core.hooksPath is per-clone configuration and does not survive a clone,
       # so the pre-push hook is not installed here and could not have run. This
       # is the server-side copy of the same rules: the one no clone can forget.
-      - name: identity and attribution over all history
+      - name: identity, trailers and tags over all history
         run: bash scripts/check-identity.sh
 
       # The self-test runs the real hook, and the hook refuses to pass when
@@ -106,7 +106,7 @@ jobs:
             | sudo tar -xz -C /usr/local/bin gitleaks
           gitleaks version
 
-      - name: prove the pre-push gate still rejects bad history
+      - name: prove the pre-push gate rejects and accepts what it claims
         run: bash .githooks/selftest.sh
 
   secrets:
