@@ -590,8 +590,9 @@ point it no longer tests anything.
 
 The rate ratio is what "traffic moved off apex" actually means, and it is
 scale-independent: it stays valid if the default load changes, if the providers
-get faster, or if the runner is slow. The observed value is around 1% against a
-15% ceiling, so there is real headroom without the assertion being vacuous.
+get faster, or if the runner is slow. The observed value is 1-2% against a 15%
+ceiling -- 2% on the two most recent runs, one local and one in CI -- so there is
+real headroom without the assertion being vacuous.
 
 **Rejected: raise the absolute cap to 40.** Same brittleness, postponed. The next
 change to the default load reintroduces it.

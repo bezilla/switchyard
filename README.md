@@ -32,6 +32,18 @@ One run of `make e2e`, which asserts these from parsed Prometheus metrics rather
 than from log output. Arrival times are random, so the failover count moves by a
 few either way between runs; the zero and the 100% do not.
 
+These are the **deterministic simulated demo** — three simulated providers, the
+default 10 req/s, the default 30-second request budget — and nothing on the
+opt-in real-provider path changes them. They were re-established by running
+`make e2e` again on the current build, after the breaker-classification fix
+described in
+[DESIGN.md](DESIGN.md#the-caller-giving-up-is-not-a-failure-kind-either): 0
+requests dropped and 100% availability across both the break and the heal
+window, with apex's rate falling to 2% of its steady state. The failover count
+moves between runs, as above; those three do not. Every availability figure
+elsewhere in this file names which of the two paths it came from, because they
+are not interchangeable.
+
 The provider comes back on a ramp, not a cliff. Admitted traffic climbs:
 
 ```
@@ -318,8 +330,10 @@ docker compose start ollama
 That ramp is the geometric ladder at the top of this README — 0.05 multiplied by
 1.6 per interval — caught partway up, on a provider that is actually a model on
 a machine rather than a simulation of one. Availability across the whole run,
-deliberate outage included, was 99.98%: one request was lost, and it was a
-stream that was mid-completion when the container was killed under it.
+deliberate outage included, was 99.98% — that is the **opt-in real-provider
+path**, not the simulated demo above. One request was lost, and it was a stream
+that was mid-completion when the container was killed under it, which is the one
+kind of loss the failover boundary cannot cover.
 
 Three things are worth knowing about how the adapter earns that:
 
@@ -383,7 +397,13 @@ default 10 req/s of synthetic load and two slots, the real model is busy almost
 all the time: completions run to 256 tokens, which is tens of seconds of one
 slot. Everything else is capacity-refused and served by `apex` in microseconds,
 availability holds at 100%, and `ollama`'s circuit stays closed throughout —
-a full box is not a broken box. To watch the real model answer *your* request
+a full box is not a broken box.
+
+That sentence was written before the breaker-classification fix and was not true
+when written: measured then, availability was 99.661% and the circuit was being
+pushed open by callers that had given up, not by anything the provider did.
+Measured again on the current build, over 150 seconds of the same steady state:
+100.000%, zero stream errors, zero trips. To watch the real model answer *your* request
 rather than a synthetic one, quiet the load first:
 
 ```sh
