@@ -649,3 +649,59 @@ anything baked into a commit hash, that is already too late.
 The consequence for how changes land — direct push, never the merge button — is
 in [CONTRIBUTING.md](CONTRIBUTING.md), and the operational detail is in
 [docs/maintainer-notes.md](docs/maintainer-notes.md).
+
+**How the two stay in step.** Both files carry the same `check_trailers()`
+function, byte for byte, and `.githooks/selftest.sh` hashes it out of each and
+fails if they differ. Separate files rather than a shared library because they do
+different jobs — the hook fails fast on the first problem in a push range, the CI
+script reports counts for every scan over all history — and a library would trade
+the duplication for a path dependency between `.githooks/` and `scripts/`. The
+hashed-function test buys the same guarantee without the coupling.
+
+## The gate allowlists trailers instead of hunting for names
+
+**Decision.** Only three trailer keys may appear on a commit, or in an annotated
+tag's body: `Signed-off-by` carrying exactly `Paul Bezilla
+<bezilla@protonmail.com>`, `Verified` and `Measured` carrying free text.
+Everything else is refused.
+
+**Why.** What this replaced was two scans for a list of vendor names plus, in
+`check-identity.sh`, a trailer **denylist** — `grep -icE
+'generated|assisted|on-behalf-of'`. Measured before removing them: across the
+full history of all six repositories in this family, 207 commits, the name scans
+matched nothing, and the denylist counted nothing here.
+
+A denylist catches the words somebody thought of. It is stale the day a tool
+ships using a fourth one, and it cannot be made complete because the list of
+things that do not exist yet is not enumerable. An allowlist inverts the
+question: any tool that stamps provenance onto a commit does it through a
+trailer, so an unlisted key is refused whether or not this repository has heard
+of the thing that wrote it.
+
+**Rejected: keeping the denylist and adding to it.** That is the same bet with a
+longer list, and it loses on the first tool nobody predicted.
+
+**Trailers are read with `git interpret-trailers --parse`, not a regex.** That is
+git's own definition — the last paragraph, and only when the whole paragraph
+parses as trailers — and it is the definition the tools stamping provenance use.
+It has an edge worth stating: **whether a `Key: Value` line is a trailer depends
+on which paragraph it lands in.** `Verified: ...` followed by more prose is
+ordinary text the gate never inspects; the same line at the end is a trailer
+whose key must be allowlisted. Six lines in this repository are prose of exactly
+that shape — `hold:`, `load:`, `claim:`, `step:`, `one:` and, yes, `Verified:` —
+so a `^Key:` regex would have rejected this repository's own history.
+
+**Annotated tags are checked now**, which nothing did before: the tagger must be
+the canonical identity, and the annotation body goes through the same allowlist.
+Both `v0.1.0` and `v0.2.0` pass as they stand.
+
+**Scope did not change.** `--branches --tags`, deliberately not `--all`. The
+three `refs/pull/N/head` refs carrying dependabot's identity stay out of scope
+for the reason recorded above: that identity exists on no branch and no tag here,
+and a gate that flags a commit nobody can remove is a gate that gets switched
+off.
+
+**History was not rewritten.** No force push, no retag, nothing dropped. Both
+gates were run over all 38 commits and both tags before the change landed: the
+old hook accepted 38 and rejected 0, the new hook accepted 38 and rejected 0, and
+the count of commits the old gate accepts and the new one refuses is 0.

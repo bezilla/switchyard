@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The commit gate allowlists trailers instead of hunting for vendor names.**
+  Only `Signed-off-by` carrying exactly `Paul Bezilla <bezilla@protonmail.com>`,
+  `Verified` and `Measured` may appear on a commit or in an annotated tag's body;
+  every other key is refused. This replaced two scans for a list of vendor terms
+  and, in `scripts/check-identity.sh`, a trailer denylist grepping for
+  `generated|assisted|on-behalf-of` — a denylist catches the words somebody
+  thought of, and is stale the day a tool ships using a fourth. Trailers are read
+  with `git interpret-trailers --parse`, git's own definition, because a `^Key:`
+  regex would reject six lines of this repository's own commit prose.
+- **Annotated tags are checked**: the tagger must be the canonical identity and
+  the annotation body goes through the same allowlist. `v0.1.0` and `v0.2.0` both
+  pass as they stand; nothing inspected either before.
+- **The hook and `scripts/check-identity.sh` carry the same `check_trailers()`
+  function byte for byte**, and the self-test hashes it out of both and fails if
+  they differ — so the local gate and the CI gate cannot drift apart silently.
+- **The self-test grew to twenty cases** and proves both directions, including
+  the three scope cases that keep `refs/pull/N/head` out of the gate's reach. It
+  captures each gate's status with `|| got=$?` rather than reading `$?` from a
+  bare command, which is silently fatal under the `bash -eo pipefail` CI runs
+  steps with, and is exercised under `-e`, plain bash and its shebang.
+
+**Scope is unchanged** — `--branches --tags`, deliberately not `--all`, so the
+three `refs/pull/N/head` refs carrying dependabot's identity stay out of it.
+**History was not rewritten.** Both gates were run over all 38 commits and both
+tags first: old 38 accepted / 0 rejected, new 38 accepted / 0 rejected,
+disagreements 0.
+
+
 ### Planned
 
 Not started. See [ROADMAP.md](ROADMAP.md) for the full argument.

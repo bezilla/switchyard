@@ -61,8 +61,23 @@ repositories had to be deleted and recreated over exactly this.
 
 ## Editing the identity gate
 
-`.githooks/pre-push` and `scripts/check-identity.sh` both match a set of terms
-using single-character brackets — `[x]` matches exactly `x` in a POSIX extended
-regex — so that each file can scan for a term without containing it. Both files
-say so in their own comments. Do not "simplify" the brackets away: either file
-would then fail its own check.
+`.githooks/pre-push` and `scripts/check-identity.sh` enforce the same rule from
+two places, and they carry the same `check_trailers()` function to do it —
+**byte for byte**. `.githooks/selftest.sh` hashes the function out of both files
+and fails if they differ, so the local gate and the CI gate cannot quietly
+disagree about what is allowed.
+
+If you change the allowlist, change it in both files. The test will tell you if
+you forget, which is the point of it existing.
+
+They are separate files rather than one sourced library because they do
+different jobs: the hook fails fast on the first problem in a push range, and
+`check-identity.sh` reports counts for every scan over all history. A shared
+library would remove the duplication and add a path dependency between
+`.githooks/` and `scripts/`; the hashed-function test buys the same guarantee
+without the coupling. If a third caller ever appears, that trade flips.
+
+The gate previously matched a list of vendor terms written with single-character
+brackets, so each file could scan for a term without containing it. That scan is
+gone — it matched nothing across 207 commits of full history in six
+repositories — and the brackets went with it.

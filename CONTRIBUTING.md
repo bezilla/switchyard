@@ -43,6 +43,57 @@ make e2e       # the full stack, a real injected failure, assertions from metric
 `make check` is what CI runs, minus the end-to-end job. `make e2e` needs Docker
 and takes about two minutes.
 
+### Commit trailers are allowlisted
+
+Only three trailer keys may appear on a commit, or in an annotated tag's body.
+Every other key is refused:
+
+| trailer | rule |
+|---------|------|
+| `Signed-off-by` | must be exactly `Paul Bezilla <bezilla@protonmail.com>` |
+| `Verified` | free text |
+| `Measured` | free text |
+
+This replaced a denylist that grepped trailers for `generated|assisted|
+on-behalf-of`. A denylist catches the words somebody thought of and is stale the
+day a tool ships using a fourth; an allowlist refuses an unlisted key whether or
+not the gate has heard of what wrote it. Both `.githooks/pre-push` and
+`scripts/check-identity.sh` carry the same `check_trailers()` function byte for
+byte, and `make test-hook` fails if they ever differ.
+
+#### The trailer rule has one sharp edge
+
+Whether a `Key: Value` line is a trailer depends on **which paragraph it lands
+in**. git parses only the last paragraph, and only when the whole paragraph
+parses as trailers:
+
+```
+Route around a dead provider         Route around a dead provider
+
+Verified: availability held.         Verified: availability held.
+
+And a closing paragraph.             ← nothing after it
+```
+
+The left-hand message ends in prose, so `Verified:` there is ordinary text the
+gate never looks at. The right-hand one ends with that line, so it **is** a
+trailer and its key must be allowlisted. Same words, two outcomes, decided by
+what comes after.
+
+That is git's own definition, read with `git interpret-trailers --parse`, and it
+is the definition the tools that stamp provenance use. A `^Key:` regex would be
+simpler and would reject this repository's own prose — six lines here are
+`Key: Value` shaped and are not trailers: `hold:`, `load:`, `claim:`, `step:`,
+`one:` and `Verified:`.
+
+If a push is refused for a trailer you thought was prose, check whether it ended
+up last. A new evidence word — `Tested:`, `Confirmed:` — needs adding to the
+allowlist in both files before it can land there. That is the accepted cost of a
+tight list.
+
+**History was not rewritten when this changed.** No force push, no retag, nothing
+dropped; only the rule applied to new pushes is different.
+
 ### What CI runs
 
 | job | what it enforces |
@@ -50,7 +101,7 @@ and takes about two minutes.
 | `build` | gofmt, `go vet`, `go build`, `go test -race` |
 | `lint` | golangci-lint, pinned version |
 | `vuln` | govulncheck, pinned version |
-| `identity` | commit identity over all history |
+| `identity` | commit identity, the trailer allowlist and tag taggers, over all history and both tags |
 | `secrets` | gitleaks over the full history |
 | `e2e-failover` | starts the stack, breaks a provider, asserts from parsed metrics |
 
