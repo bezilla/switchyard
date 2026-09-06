@@ -7,13 +7,24 @@
 #   1. identity     every commit is authored AND committed by the one canonical
 #                   person. Identity is baked into the commit hash, so fixing it
 #                   after a push means rewriting published history.
-#   2. attribution  no generated-by marks, in commit messages or in the tree.
+#   2. trailers     an allowlist. Only Signed-off-by (carrying exactly the
+#                   canonical identity), Verified and Measured (both free text)
+#                   may appear. Every other trailer key is refused.
 #   3. secrets      gitleaks over history.
 #
-# The forbidden terms below are written with single-character brackets: in a
-# POSIX extended regex [x] matches exactly x, so the pattern is literal while
-# this file's own bytes are not. That is why this hook can scan for the terms
-# without tripping over itself. Do not "simplify" the brackets away.
+# Why an allowlist rather than a list of names to search for. A denylist catches
+# only what somebody thought to write down; it is stale the day a new tool ships
+# and it has to be smuggled past its own scan. Any tool that stamps provenance
+# onto a commit does it through a trailer, so an unlisted key is refused whether
+# or not this file has heard of the thing that wrote it.
+#
+# Trailers are read with `git interpret-trailers --parse`: git's own definition,
+# the last paragraph and only when the whole paragraph parses as trailers. A
+# `^Key:` regex would reject ordinary commit prose -- see DESIGN.md.
+#
+# scripts/check-identity.sh enforces the SAME rule over all history. The
+# check_trailers function below is byte-identical in both files, and
+# .githooks/selftest.sh asserts that, so the two cannot drift apart silently.
 #
 # Installed by `make init`, which sets core.hooksPath=.githooks. That setting is
 # per-clone and does NOT travel with a clone, so the same rules are enforced
@@ -26,8 +37,9 @@ CANONICAL_NAME='Paul Bezilla'
 CANONICAL_EMAIL='bezilla@protonmail.com'
 CANONICAL="${CANONICAL_NAME} <${CANONICAL_EMAIL}>"
 
-# Bracketed so this file contains zero literal instances of the terms.
-FORBIDDEN='c[l]aude|anthrop[i]c|co-auth[o]red'
+# The whole policy. Signed-off-by must carry the canonical identity exactly;
+# Verified and Measured are free text, recording evidence rather than authorship.
+ALLOWED_TRAILERS='Signed-off-by, Verified, Measured'
 
 ZERO='0000000000000000000000000000000000000000'
 remote_name="${1:-origin}"
@@ -36,6 +48,43 @@ fail() {
 	printf 'pre-push: %s\n' "$1" >&2
 	exit 1
 }
+
+# --- the trailer allowlist ----------------------------------------------------
+# BYTE-IDENTICAL to the copy in scripts/check-identity.sh. selftest.sh asserts
+# that. If you change one, change both; the test will tell you if you forget.
+check_trailers() {
+	local what="$1" text="$2" trailers line key value
+	trailers="$(printf '%s\n' "$text" | git interpret-trailers --parse 2>/dev/null || true)"
+	[ -z "$trailers" ] && return 0
+
+	while IFS= read -r line; do
+		[ -z "$line" ] && continue
+		key="${line%%:*}"
+		value="${line#*:}"
+		value="${value# }"
+		case "$key" in
+			'Signed-off-by')
+				if [ "$value" != "$CANONICAL" ]; then
+					printf 'trailer: %s carries "Signed-off-by: %s", expected "%s"\n' \
+						"$what" "$value" "$CANONICAL" >&2
+					return 1
+				fi
+				;;
+			'Verified'|'Measured')
+				: # free text, by design
+				;;
+			*)
+				printf 'trailer: %s carries disallowed trailer "%s" (allowed: %s)\n' \
+					"$what" "$key" "$ALLOWED_TRAILERS" >&2
+				return 1
+				;;
+		esac
+	done <<< "$trailers"
+	return 0
+}
+
+# stdin can only be read once, and both the commit walk and the tag walk need it.
+push_input="$(cat)"
 
 # Collect the commits this push would publish. Ranges are resolved one ref at a
 # time: `--not` toggles for the rest of the argument list, so accumulating
@@ -55,14 +104,28 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
 		ref_commits="$(git rev-list "${remote_sha}..${local_sha}")"
 	fi
 	commits="${commits}${ref_commits}"$'\n'
-done
+done <<< "$push_input"
 
 commits="$(printf '%s' "$commits" | grep -v '^$' | sort -u || true)"
 
+# Annotated tags carry an identity and a message of their own, and nothing
+# checked either before. A tag was a place to put a trailer the commit gate
+# would have refused.
+tags=''
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+	[ -z "${local_sha:-}" ] && continue
+	[ "$local_sha" = "$ZERO" ] && continue
+	case "$local_ref" in
+		refs/tags/*) tags="${tags}${local_ref} ${local_sha}"$'\n' ;;
+	esac
+done <<< "$push_input"
+tags="$(printf '%s' "$tags" | grep -v '^$' || true)"
+
 # Pushing nothing, or a pure deletion, is not an occasion to fail.
-[ -z "$commits" ] && exit 0
+[ -z "$commits" ] && [ -z "$tags" ] && exit 0
 
 n=0
+if [ -n "$commits" ]; then
 while read -r sha; do
 	[ -z "$sha" ] && continue
 	n=$((n + 1))
@@ -78,21 +141,26 @@ while read -r sha; do
 	[ "$committer" = "$CANONICAL" ] ||
 		fail "commit ${sha:0:12} committer is '${committer}', expected '${CANONICAL}'"
 
-	# --- 2. attribution ---------------------------------------------------
-	# The whole message: subject, body and trailers.
-	if git show -s --format='%B' "$sha" | grep -qiE "$FORBIDDEN"; then
-		fail "commit ${sha:0:12} message contains a forbidden attribution term"
-	fi
-
-	# The tree as of this commit, so a term cannot land in one commit and be
-	# quietly deleted by a later commit in the same push.
-	hits="$(git grep -ilE "$FORBIDDEN" "$sha" -- . 2>/dev/null || true)"
-	if [ -n "$hits" ]; then
-		printf 'pre-push: commit %s has forbidden terms in:\n' "${sha:0:12}" >&2
-		printf '%s\n' "$hits" | sed 's/^/  /' >&2
-		exit 1
-	fi
+	# --- 2. trailers ------------------------------------------------------
+	check_trailers "commit ${sha:0:12}" "$(git show -s --format='%B' "$sha")" || exit 1
 done <<< "$commits"
+fi
+
+# --- 2b. tags -----------------------------------------------------------------
+t=0
+if [ -n "$tags" ]; then
+	while read -r ref obj; do
+		[ -z "${obj:-}" ] && continue
+		# A lightweight tag only points at a commit already checked above.
+		[ "$(git cat-file -t "$obj" 2>/dev/null || true)" = 'tag' ] || continue
+		t=$((t + 1))
+		raw="$(git cat-file tag "$obj")"
+		tagger="$(printf '%s\n' "$raw" | sed -n 's/^tagger \(.*\) [0-9][0-9]* [-+][0-9][0-9][0-9][0-9]$/\1/p' | head -1)"
+		[ "$tagger" = "$CANONICAL" ] ||
+			fail "tag ${ref#refs/tags/} tagger is '${tagger}', expected '${CANONICAL}'"
+		check_trailers "tag ${ref#refs/tags/}" "$(printf '%s\n' "$raw" | sed '1,/^$/d')" || exit 1
+	done <<< "$tags"
+fi
 
 # --- 3. secrets ---------------------------------------------------------------
 # Fails closed: a gate that skips silently when its scanner is missing is not a
@@ -105,5 +173,5 @@ if ! leaks="$(gitleaks git --no-banner --redact --log-level error . 2>&1)"; then
 	exit 1
 fi
 
-printf 'pre-push: %d commit(s) checked -- identity, attribution, secrets all clean\n' "$n" >&2
+printf 'pre-push: %d commit(s) and %d annotated tag(s) checked -- identity, trailers, secrets all clean\n' "$n" "$t" >&2
 exit 0

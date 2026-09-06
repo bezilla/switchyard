@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 #
-# Verify that every commit in history carries the one canonical identity and
-# carries no attribution string, in messages or in the tree.
+# Verify that every commit in history carries the one canonical identity, that
+# every annotated tag is tagged by that identity, and that no commit or tag
+# carries a trailer outside the allowlist.
 #
 # This is the same rule the pre-push hook enforces, moved to where a clone
 # cannot skip it. core.hooksPath is per-clone configuration: cloning this
 # repository does not install the hook, and `make init` is a step somebody can
 # forget. CI is the copy that runs whether or not anyone remembered.
 #
-# The forbidden terms are written with single-character brackets so that this
-# file matches them without containing them: in a POSIX extended regex [x]
-# matches exactly x. Do not "simplify" the brackets away.
+# The trailer rule is an allowlist: Signed-off-by carrying exactly the canonical
+# identity, Verified and Measured carrying free text, everything else refused.
+# It replaced a denylist that grepped trailers for 'generated|assisted|
+# on-behalf-of' -- which caught only the words somebody had thought of, and was
+# stale the day a tool shipped using a fourth one.
+#
+# check_trailers below is BYTE-IDENTICAL to the copy in .githooks/pre-push, and
+# .githooks/selftest.sh asserts that, so the local gate and this one cannot
+# drift apart. They are separate files on purpose: the hook fails fast on the
+# first problem in a push range, this reports counts for every scan over all
+# history. Same rule, two jobs.
 #
 # SCOPE: refs/heads/* and refs/tags/*, which is to say the branches and tags
 # this repository publishes. Deliberately NOT --all.
@@ -34,7 +43,7 @@
 set -uo pipefail
 
 CANONICAL='Paul Bezilla <bezilla@protonmail.com>'
-FORBIDDEN='c[l]aude|anthrop[i]c|co-auth[o]red'
+ALLOWED_TRAILERS='Signed-off-by, Verified, Measured'
 
 # Every walk below uses this. One definition so the four scans cannot drift.
 SCOPE=(--branches --tags)
@@ -42,6 +51,37 @@ SCOPE=(--branches --tags)
 status=0
 note() { printf '%s\n' "$1"; }
 bad() { printf 'identity: %s\n' "$1" >&2; status=1; }
+
+check_trailers() {
+	local what="$1" text="$2" trailers line key value
+	trailers="$(printf '%s\n' "$text" | git interpret-trailers --parse 2>/dev/null || true)"
+	[ -z "$trailers" ] && return 0
+
+	while IFS= read -r line; do
+		[ -z "$line" ] && continue
+		key="${line%%:*}"
+		value="${line#*:}"
+		value="${value# }"
+		case "$key" in
+			'Signed-off-by')
+				if [ "$value" != "$CANONICAL" ]; then
+					printf 'trailer: %s carries "Signed-off-by: %s", expected "%s"\n' \
+						"$what" "$value" "$CANONICAL" >&2
+					return 1
+				fi
+				;;
+			'Verified'|'Measured')
+				: # free text, by design
+				;;
+			*)
+				printf 'trailer: %s carries disallowed trailer "%s" (allowed: %s)\n' \
+					"$what" "$key" "$ALLOWED_TRAILERS" >&2
+				return 1
+				;;
+		esac
+	done <<< "$trailers"
+	return 0
+}
 
 # --- 1. one identity, as author and as committer, on every commit -------------
 identities="$(git log "${SCOPE[@]}" --format='%an <%ae>%n%cn <%ce>' | sort -u)"
@@ -54,38 +94,43 @@ if [ "$count" -ne 1 ] || [ "$identities" != "$CANONICAL" ]; then
 	bad "expected exactly one identity, '${CANONICAL}'"
 fi
 
-# --- 2. no attribution strings in any commit message --------------------------
-msg_hits="$(git log "${SCOPE[@]}" --format='%H %B' | grep -icE "$FORBIDDEN" || true)"
-note "commit-message lines matching a forbidden attribution term: ${msg_hits}"
-if [ "$msg_hits" -ne 0 ]; then
-	git log "${SCOPE[@]}" --format='%H%n%B' | grep -inE "$FORBIDDEN" | sed 's/^/  /' >&2
-	bad 'commit messages contain forbidden attribution terms'
-fi
-
-# --- 3. no attribution strings in any tree, at any commit ---------------------
-# Every commit, not just the tip: a term that arrived in one commit and was
-# deleted in the next is still in the published history, and a clone can still
-# read it.
-tree_hits=0
+# --- 2. no trailer outside the allowlist, on any commit ----------------------
+trailer_hits=0
 while read -r sha; do
 	[ -z "$sha" ] && continue
-	hits="$(git grep -ilE "$FORBIDDEN" "$sha" -- . 2>/dev/null || true)"
-	if [ -n "$hits" ]; then
-		tree_hits=$((tree_hits + 1))
-		printf '%s\n' "$hits" | sed 's/^/  /' >&2
-	fi
+	check_trailers "commit ${sha:0:12}" "$(git show -s --format='%B' "$sha")" ||
+		trailer_hits=$((trailer_hits + 1))
 done < <(git rev-list "${SCOPE[@]}")
 
-note "commits whose tree contains a forbidden attribution term: ${tree_hits}"
-if [ "$tree_hits" -ne 0 ]; then
-	bad 'repository contents contain forbidden attribution terms'
+note "commits carrying a trailer outside the allowlist: ${trailer_hits}"
+if [ "$trailer_hits" -ne 0 ]; then
+	bad "commit trailers outside the allowlist (${ALLOWED_TRAILERS})"
 fi
 
-# --- 4. no signed-off or generated-by trailers of any kind --------------------
-trailers="$(git log "${SCOPE[@]}" --format='%(trailers:only)' | grep -icE 'generated|assisted|on-behalf-of' || true)"
-note "commit trailers claiming generation or assistance: ${trailers}"
-if [ "$trailers" -ne 0 ]; then
-	bad 'commit trailers claim generation or assistance'
-fi
+# --- 3. annotated tags: tagger identity and annotation body -------------------
+# Nothing checked either before. A tag carries an identity field of its own and
+# a message of its own, so it was a place to put what the commit gate refused.
+tag_count=0
+tagger_hits=0
+tag_trailer_hits=0
+while read -r ref obj; do
+	[ -z "${obj:-}" ] && continue
+	[ "$(git cat-file -t "$obj" 2>/dev/null || true)" = 'tag' ] || continue
+	tag_count=$((tag_count + 1))
+	raw="$(git cat-file tag "$obj")"
+	tagger="$(printf '%s\n' "$raw" | sed -n 's/^tagger \(.*\) [0-9][0-9]* [-+][0-9][0-9][0-9][0-9]$/\1/p' | head -1)"
+	if [ "$tagger" != "$CANONICAL" ]; then
+		printf 'identity: tag %s tagger is %s\n' "${ref#refs/tags/}" "$tagger" >&2
+		tagger_hits=$((tagger_hits + 1))
+	fi
+	check_trailers "tag ${ref#refs/tags/}" "$(printf '%s\n' "$raw" | sed '1,/^$/d')" ||
+		tag_trailer_hits=$((tag_trailer_hits + 1))
+done < <(git for-each-ref --format='%(refname) %(objectname)' refs/tags)
+
+note "annotated tags checked: ${tag_count}"
+note "tags whose tagger is not the canonical identity: ${tagger_hits}"
+note "tags carrying a trailer outside the allowlist: ${tag_trailer_hits}"
+[ "$tagger_hits" -eq 0 ] || bad 'annotated tags carry a non-canonical tagger'
+[ "$tag_trailer_hits" -eq 0 ] || bad "tag annotations carry trailers outside the allowlist (${ALLOWED_TRAILERS})"
 
 exit "$status"

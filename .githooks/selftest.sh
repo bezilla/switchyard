@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 #
-# Proves the pre-push hook actually rejects what it claims to reject.
+# Proves the pre-push hook rejects what it claims to reject, and -- just as
+# important -- accepts what it claims to accept.
 #
-# A gate nobody has watched fail is a gate nobody knows works. This builds a
-# throwaway repository, commits deliberately bad history into it, and asserts
-# the hook's exit status for each case. Run via `make test-hook`; also run in CI.
+# A gate nobody has watched fail is a gate nobody knows works, and a gate only
+# ever watched to refuse could be one that refuses everything. This builds
+# throwaway repositories, commits one kind of history into each, and asserts the
+# exit status. Run via `make test-hook`; also run in CI.
+#
+# Every case captures the status with `|| got=$?` rather than running the gate
+# bare and reading `$?`. CI runs its steps under `bash -eo pipefail`, where a
+# bare non-zero command kills the step before the assertion is reached -- so the
+# other shape reports nothing on exactly the cases it exists to prove. This file
+# is run under -e, under plain bash and through its shebang.
 
 set -uo pipefail
 
@@ -18,12 +26,8 @@ CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/check-identity.s
 
 GOOD_NAME='Paul Bezilla'
 GOOD_EMAIL='bezilla@protonmail.com'
+GOOD="${GOOD_NAME} <${GOOD_EMAIL}>"
 ZERO='0000000000000000000000000000000000000000'
-
-# Same bracket trick as the hook: this file contains no literal forbidden term,
-# but the strings it builds at runtime do.
-TERM_A='c'"$(printf 'l')"'aude'
-TERM_B='co-'"$(printf 'authored')"'-by'
 
 # The identity a dependency bot actually writes: author is the bot, committer is
 # the platform. Neither is canonical, so a commit carrying it must fail the gate
@@ -39,34 +43,32 @@ trap 'rm -rf "$tmp"' EXIT
 pass=0
 fail=0
 
+ok_()  { printf '  ok    %-52s exit %d\n' "$1" "$2"; pass=$((pass + 1)); }
+bad_() { printf '  FAIL  %-52s exit %d, wanted %d\n' "$1" "$2" "$3"; fail=$((fail + 1)); }
+
 # run_case <description> <expected exit> -- runs the hook against HEAD of $repo
 run_case() {
-	local desc="$1" want="$2" sha
+	local desc="$1" want="$2" sha got=0
 	sha="$(git -C "$repo" rev-parse HEAD)"
 	printf '%s %s %s %s\n' 'refs/heads/main' "$sha" 'refs/heads/main' "$ZERO" |
-		(cd "$repo" && "$HOOK" origin) >/dev/null 2>&1
-	local got=$?
-	if [ "$got" -eq "$want" ]; then
-		printf '  ok    %-46s exit %d\n' "$desc" "$got"
-		pass=$((pass + 1))
-	else
-		printf '  FAIL  %-46s exit %d, wanted %d\n' "$desc" "$got" "$want"
-		fail=$((fail + 1))
-	fi
+		(cd "$repo" && "$HOOK" origin) >/dev/null 2>&1 || got=$?
+	[ "$got" -eq "$want" ] && ok_ "$desc" "$got" || bad_ "$desc" "$got" "$want"
+}
+
+# run_tag_case <description> <expected exit> <tag> -- pushes a tag ref
+run_tag_case() {
+	local desc="$1" want="$2" tag="$3" obj got=0
+	obj="$(git -C "$repo" rev-parse "refs/tags/$tag")"
+	printf '%s %s %s %s\n' "refs/tags/$tag" "$obj" "refs/tags/$tag" "$ZERO" |
+		(cd "$repo" && "$HOOK" origin) >/dev/null 2>&1 || got=$?
+	[ "$got" -eq "$want" ] && ok_ "$desc" "$got" || bad_ "$desc" "$got" "$want"
 }
 
 # run_scope_case <description> <expected exit> -- runs check-identity.sh in $repo
 run_scope_case() {
-	local desc="$1" want="$2"
-	(cd "$repo" && bash "$CHECK") >/dev/null 2>&1
-	local got=$?
-	if [ "$got" -eq "$want" ]; then
-		printf '  ok    %-46s exit %d\n' "$desc" "$got"
-		pass=$((pass + 1))
-	else
-		printf '  FAIL  %-46s exit %d, wanted %d\n' "$desc" "$got" "$want"
-		fail=$((fail + 1))
-	fi
+	local desc="$1" want="$2" got=0
+	(cd "$repo" && bash "$CHECK") >/dev/null 2>&1 || got=$?
+	[ "$got" -eq "$want" ] && ok_ "$desc" "$got" || bad_ "$desc" "$got" "$want"
 }
 
 # bot_commit -- adds one commit with bot identity, prints its sha, leaves main
@@ -83,7 +85,7 @@ bot_commit() {
 	git -C "$repo" branch -q -D scratch
 }
 
-# fresh_repo <author name> <author email> -- a repo with one canonical commit
+# fresh_repo -- a repo with one canonical commit
 fresh_repo() {
 	repo="$tmp/r$RANDOM$RANDOM"
 	git init -q -b main "$repo"
@@ -94,7 +96,27 @@ fresh_repo() {
 	git -C "$repo" commit -q -m 'Add baseline'
 }
 
-echo 'pre-push hook self-test'
+msg_commit() {
+	echo "x $RANDOM" >> "$repo/file.txt"
+	git -C "$repo" add -A
+	git -C "$repo" commit -q -m "$1"
+}
+
+echo 'pre-push gate self-test'
+
+# --- the two enforcement points must carry the same rule ----------------------
+# The hook and scripts/check-identity.sh are separate files with different jobs:
+# one fails fast over a push range, the other reports counts over all history.
+# They share the policy by carrying the same function, and this asserts they
+# still do, byte for byte -- drift here would mean the local gate and the CI
+# gate quietly disagree about what is allowed.
+fn_hook="$(sed -n '/^check_trailers() {/,/^}/p' "$HOOK" | shasum -a 256 | cut -d' ' -f1)"
+fn_check="$(sed -n '/^check_trailers() {/,/^}/p' "$CHECK" | shasum -a 256 | cut -d' ' -f1)"
+if [ -n "$fn_hook" ] && [ "$fn_hook" = "$fn_check" ]; then
+	ok_ 'check_trailers is byte-identical in hook and CI script' 0
+else
+	bad_ 'check_trailers has DRIFTED between hook and CI script' 1 0
+fi
 
 # --- the good case ------------------------------------------------------------
 fresh_repo
@@ -114,29 +136,74 @@ GIT_COMMITTER_NAME='Some Service' GIT_COMMITTER_EMAIL='noreply@example.invalid' 
 	git -C "$repo" commit -q -m 'Change a file'
 run_case 'wrong committer' 1
 
-# --- forbidden term in the commit message -------------------------------------
+# --- the allowlist, both directions -------------------------------------------
+# Reviewed-by is innocuous and is refused anyway. That is the allowlist working:
+# the rule is "these three and nothing else", not a list of things to fear.
 fresh_repo
-echo 'x' >> "$repo/file.txt"; git -C "$repo" add -A
-git -C "$repo" commit -q -m "Change a file
+msg_commit 'Change a file
 
-${TERM_B}: Someone <someone@example.invalid>"
-run_case 'attribution trailer in message' 1
+Reviewed-by: Someone <someone@example.invalid>'
+run_case 'disallowed trailer key' 1
 
-# --- forbidden term in the tree -----------------------------------------------
 fresh_repo
-printf '// generated by %s\n' "$TERM_A" > "$repo/tainted.go"
-git -C "$repo" add -A
-git -C "$repo" commit -q -m 'Add a file'
-run_case 'attribution string in tree' 1
+msg_commit "Change a file
 
-# --- a term introduced then deleted in the same push --------------------------
-# The tree is checked at every commit in the range, not just at the tip, so
-# deleting the evidence in a follow-up commit does not launder the push.
+Signed-off-by: ${GOOD}"
+run_case 'Signed-off-by, canonical identity' 0
+
 fresh_repo
-printf '// %s\n' "$TERM_A" > "$repo/tainted.go"
-git -C "$repo" add -A && git -C "$repo" commit -q -m 'Add a file'
-git -C "$repo" rm -q tainted.go && git -C "$repo" commit -q -m 'Remove a file'
-run_case 'term added then deleted in same push' 1
+msg_commit 'Change a file
+
+Signed-off-by: Someone Else <someone@example.invalid>'
+run_case 'Signed-off-by, different identity' 1
+
+fresh_repo
+msg_commit 'Change a file
+
+Verified: availability held at 99.4% across the failover window.'
+run_case 'Verified, free text' 0
+
+fresh_repo
+msg_commit 'Change a file
+
+Measured: 3 runs, 0 failures.'
+run_case 'Measured, free text' 0
+
+# Tested reads exactly like Verified and Measured and is refused anyway, because
+# the allowlist is a list and not a vibe. This is the accepted cost of a tight
+# list: the next evidence word needs a one-line change before it can land.
+fresh_repo
+msg_commit 'Change a file
+
+Tested: every case green on three providers.'
+run_case 'unlisted evidence key (Tested)' 1
+
+# git parses only the LAST paragraph as trailers. The same word is prose here
+# and a trailer above, which is why this gate uses git's parser and not a
+# ^Key: regex.
+fresh_repo
+msg_commit 'Change a file
+
+Verified: this line is not in the final paragraph.
+
+So it is prose, and this paragraph is what makes it so.'
+run_case 'mid-message Key: Value is not a trailer' 0
+
+# --- annotated tags, which nothing checked before -----------------------------
+fresh_repo
+GIT_COMMITTER_NAME='Some Service' GIT_COMMITTER_EMAIL='noreply@example.invalid' \
+	git -C "$repo" tag -a v9.9.9 -m 'Release nine'
+run_tag_case 'annotated tag, wrong tagger' 1 'v9.9.9'
+
+fresh_repo
+git -C "$repo" tag -a v1.0.0 -m 'Release one'
+run_tag_case 'annotated tag, canonical tagger' 0 'v1.0.0'
+
+fresh_repo
+git -C "$repo" tag -a v2.0.0 -m 'Release two
+
+Reviewed-by: Someone <someone@example.invalid>'
+run_tag_case 'disallowed trailer in a tag annotation' 1 'v2.0.0'
 
 # --- scope of the server-side check -------------------------------------------
 # The gate's claim is "every commit I wrote carries my identity". A bot's commit
@@ -165,14 +232,21 @@ run_scope_case 'same bot commit on a local branch' 1
 
 # Guards against "fixing" the scope by narrowing it to main. A topic branch is a
 # branch this clone can push, so it stays in scope -- for identity and for
-# attribution both.
+# trailers both.
 fresh_repo
 git -C "$repo" checkout -q -b topic
-printf '// %s\n' "$TERM_A" > "$repo/tainted.go"
-git -C "$repo" add tainted.go
-git -C "$repo" commit -q -m 'Add a file'
+msg_commit 'Change a file
+
+Reviewed-by: Someone <someone@example.invalid>'
 git -C "$repo" checkout -q main
-run_scope_case 'forbidden term on a non-main local branch' 1
+run_scope_case 'disallowed trailer on a non-main local branch' 1
+
+# The CI script must also refuse a tag the hook would refuse -- same rule, and
+# tags are in its scope too.
+fresh_repo
+GIT_COMMITTER_NAME='Some Service' GIT_COMMITTER_EMAIL='noreply@example.invalid' \
+	git -C "$repo" tag -a v9.9.9 -m 'Release nine'
+run_scope_case 'non-canonical tag tagger, server-side' 1
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
