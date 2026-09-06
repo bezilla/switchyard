@@ -119,5 +119,13 @@ jobs:
       - name: gitleaks over full history
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
+          # The action refuses to scan a pull_request event without this and
+          # exits before reading anything: "GITHUB_TOKEN is now required to
+          # scan pull requests". It passed on push, where it is not needed,
+          # so the job was green on main and red on every pull request. It is
+          # a required check, so that combination blocked all three pull
+          # requests this repository has had, including the one that would
+          # have upgraded this action.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
           GITLEAKS_ENABLE_SUMMARY: "false"
