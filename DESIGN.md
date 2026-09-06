@@ -92,9 +92,34 @@ completion was recorded as a provider failure, and the circuit opened against an
 upstream whose only fault was being slower than a deadline chosen for something
 else. Roughly one request in seven, in steady state, with nothing broken.
 
-The fix is one condition — the stream is only marked failed when the caller's
-context is still live — and it is the kind of thing a simulation cannot teach
-you, because a simulation fast enough to be convenient is fast enough to hide it.
+The fix is one condition: the stream is marked failed only when the caller's
+context is still live. An abandoned request now reports **nothing** to the
+breaker — not a failure, and not a success either, because a spurious success
+dilutes the failure ratio and would make a genuinely sick provider look
+healthier the more callers gave up on it.
+
+**How it was found, and how it is held.** It was found by measurement, not by
+reading: a real model in the routing table produced roughly one stream error in
+seven with nothing broken, and the counters said the provider was at fault. It
+was confirmed by reverting the condition and watching twenty callers, each
+timing out on its own deadline, open the circuit after eight requests and then
+fail routing outright.
+
+That reproduction is now a test rather than an afternoon. Restoring the old
+classification fails three tests in `internal/router`: the two that assert a
+canceled or expired caller leaves the breaker's failure count at zero, and the
+aggregate one that drives twenty such callers and requires the circuit to stay
+closed. Two further tests exist to catch the opposite mistake — a fix that
+exempts too much — by requiring that a provider's *own* internal timeout, and a
+connection dropped under a caller who is still waiting, both still count. Those
+two pass against the old code as well, which is the point of having them.
+
+The general lesson is worth more than the bug. A simulation fast enough to be
+convenient is fast enough to hide this entire class of defect: no simulated
+provider is slow enough for a caller to give up on one, so caller-cancellation
+was never exercised until a real model was in the path. The simulated providers
+remain the right default for everything they are good at, and this is the thing
+they are structurally unable to test.
 
 ---
 
