@@ -69,6 +69,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A caller that gave up no longer counts against the provider it gave up on. A
+  client disconnecting, or running out of its own deadline, ended the stream
+  with an error, and any non-EOF stream error was reported to the circuit
+  breaker as ill health -- so a working-but-slow upstream had its circuit pushed
+  open by clients that were not willing to wait. It is still a failed request
+  and still counts against the SLO; it no longer changes the routing decision
+  for the next caller. Found only because a real model is slow enough for a
+  deadline to expire mid-completion, which no simulated provider is: it was
+  costing roughly one request in seven with nothing actually broken.
+- The load generator classified a request killed by its own deadline as a
+  stream error rather than a cancellation, because it tested the parent context
+  instead of the per-request one. Cancellations are excluded from the SLO by
+  design; these were not, and availability read 99.661% against a healthy
+  stack.
+- The load generator's per-request budget is configurable
+  (`SWITCHYARD_REQUEST_TIMEOUT`, default 30s, unchanged for the simulated
+  providers). Thirty seconds does not fit a real model on a CPU, where a
+  250-token answer runs past a minute, and a budget under that abandons long
+  completions just short of success -- measuring the deadline instead of the
+  provider.
+- A stream that fails mid-completion is now logged with the provider and the
+  error. There was previously no way to find out why one had died, which is
+  what made the three defects above take an afternoon to tell apart.
 - `make help`, the default goal, listed no targets at all. Its grep pattern
   ended in a literal process id where an escaped `$` belonged, so nothing
   matched and the first command a stranger runs printed an empty list.

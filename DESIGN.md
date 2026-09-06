@@ -71,6 +71,31 @@ too fast" from "I am broken" makes exactly the wrong decision under load.
 to reason about on a dashboard, which is where these decisions get debugged. One
 breaker with a classification rule in front of it was the better trade.
 
+### The caller giving up is not a failure kind either
+
+The taxonomy above is about how a provider refuses. There is a fourth thing that
+can end a request, and it is not the provider at all: the caller going away. A
+client disconnects, or runs out of a deadline it set for itself, and the stream
+dies mid-completion.
+
+That is a failed request — the caller got no answer, and the SLO should say so —
+but it is not evidence about the provider, and it must not push a circuit toward
+open. Counting it is the same mistake as counting a 429: the upstream did
+exactly what it was asked, and shunning it on that evidence keeps traffic away
+from something that was working.
+
+This was wrong until a real provider surfaced it, and the reason it hid for so
+long is worth recording. No simulated provider is slow enough for anyone to give
+up on. A real model on a CPU is: completions run past a minute, the load
+generator's own thirty-second budget expired mid-stream, every abandoned
+completion was recorded as a provider failure, and the circuit opened against an
+upstream whose only fault was being slower than a deadline chosen for something
+else. Roughly one request in seven, in steady state, with nothing broken.
+
+The fix is one condition — the stream is only marked failed when the caller's
+context is still live — and it is the kind of thing a simulation cannot teach
+you, because a simulation fast enough to be convenient is fast enough to hide it.
+
 ---
 
 ## Recovery is gradual

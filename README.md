@@ -293,7 +293,17 @@ runs one scenario twice — once against a simulated 503, once against a live HT
 server that returns 200 and then never sends a token — and requires the two
 observed sequences of routing outcomes to be *equal*.
 
-Observed on the running stack, with the real model as primary:
+![Grafana circuit breaker state panel across a real outage: apex, bargain and local hold solid green for the whole window while the ollama row turns red when its container is stopped, flickers yellow through two recovery attempts that reopen, and returns to green after the container comes back](docs/images/breaker-real-provider.png)
+
+*The `Circuit breaker state` panel across one break and recovery of the **real**
+provider, under the opt-in profile. Three simulated providers hold green; the
+fourth row is a model in a container that was stopped at 00:32:31 and started
+again at 00:33:48. Red is open, yellow is recovering — the flickers are the ramp
+starting, failing its ratio check and backing off. Same panel, same colors, same
+semantics as the simulated three, with no dashboard change: the router does not
+know which of its providers do network I/O.*
+
+The same cycle from the command line:
 
 ```
 ask                        X-Switchyard-Provider: ollama    failovers: 0    "Red"
@@ -301,13 +311,15 @@ docker compose stop ollama
 ask (identical request)    X-Switchyard-Provider: apex      failovers: 1
 admin/state                ollama  open        admit=0     probe=unavailable
 docker compose start ollama
-  t+60s                    ollama  recovering  admit=0.52
-  t+75s                    ollama  closed      admit=1     recoveries=1
+  t+20s                    ollama  recovering  admit=0.84
+  t+40s                    ollama  closed      admit=1
 ```
 
-That `admit=0.52` is the same geometric ladder at the top of this README — 0.05
-multiplied by 1.6 per interval — caught partway up, on a provider that is
-actually a model on a machine rather than a simulation of one.
+That ramp is the geometric ladder at the top of this README — 0.05 multiplied by
+1.6 per interval — caught partway up, on a provider that is actually a model on
+a machine rather than a simulation of one. Availability across the whole run,
+deliberate outage included, was 99.98%: one request was lost, and it was a
+stream that was mid-completion when the container was killed under it.
 
 Three things are worth knowing about how the adapter earns that:
 
@@ -358,6 +370,13 @@ Three things about the container path are worth knowing before you run it:
   minutes, which blew the 60 s start budget and was correctly recorded as a
   timeout and failed over. A true report of a model that was not ready, and a
   terrible first impression. `make up-ollama` takes about 50 seconds instead.
+
+**Give it a request budget that fits.** `SWITCHYARD_REQUEST_TIMEOUT` bounds one
+synthetic request end to end and defaults to 30 seconds, which is generous for
+the simulated providers and far too short for a real model on a CPU — a
+250-token answer at 300 ms per token runs past a minute. A budget under that
+abandons long completions just short of success and measures the deadline
+instead of the provider. `make up-ollama` sets it to 180s.
 
 **Expect most traffic to fail over, and expect that to be correct.** With the
 default 10 req/s of synthetic load and two slots, the real model is busy almost
