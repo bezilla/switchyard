@@ -324,9 +324,16 @@ type gatedStream struct {
 	provider.Stream
 	br *breaker.Breaker
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// failed means the provider broke the stream: real evidence of ill health.
 	failed bool
-	done   bool
+	// abandoned means the caller went away before the stream finished. That is
+	// evidence about the caller, not the provider, and the breaker is told
+	// nothing at all -- not a failure, and not a success either, because a
+	// spurious success dilutes the failure ratio and makes a genuinely sick
+	// provider look better the more callers give up on it.
+	abandoned bool
+	done      bool
 }
 
 func (g *gatedStream) Next(ctx context.Context) (provider.Chunk, error) {
@@ -345,11 +352,13 @@ func (g *gatedStream) Next(ctx context.Context) (provider.Chunk, error) {
 		//
 		// This only becomes visible with a provider slow enough for a client
 		// to give up on, which no simulated provider is.
-		if ctx.Err() == nil {
-			g.mu.Lock()
+		g.mu.Lock()
+		if ctx.Err() != nil {
+			g.abandoned = true
+		} else {
 			g.failed = true
-			g.mu.Unlock()
 		}
+		g.mu.Unlock()
 	}
 	return chunk, err
 }
@@ -358,13 +367,19 @@ func (g *gatedStream) Close() error {
 	g.mu.Lock()
 	first := !g.done
 	g.done = true
-	failed := g.failed
+	failed, abandoned := g.failed, g.abandoned
 	g.mu.Unlock()
 
 	if first {
-		if failed {
+		switch {
+		case failed:
+			// The provider broke it. Real evidence, even if the caller also
+			// went away afterwards -- the first thing that happened is the
+			// thing that says something.
 			g.br.Failure()
-		} else {
+		case abandoned:
+			// Deliberately nothing. See the abandoned field.
+		default:
 			g.br.Success()
 		}
 	}

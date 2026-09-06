@@ -444,6 +444,176 @@ func TestMidStreamFailureRecordsHealth(t *testing.T) {
 	}
 }
 
+// ctxStream serves one chunk and then does whatever the caller's context tells
+// it to. It stands in for any stream that is still open when something ends the
+// request from the outside.
+type ctxStream struct {
+	emitted int
+	// failWith is returned once the context is done. Real providers surface a
+	// cancellation as their own error type rather than passing ctx.Err()
+	// through, so the tests do too.
+	failWith error
+}
+
+func (s *ctxStream) Next(ctx context.Context) (provider.Chunk, error) {
+	if s.emitted == 0 {
+		s.emitted++
+		return provider.Chunk{Text: "x", Index: 0}, nil
+	}
+	<-ctx.Done()
+	return provider.Chunk{}, s.failWith
+}
+
+func (s *ctxStream) Usage() provider.Usage { return provider.Usage{CompletionTokens: s.emitted} }
+func (s *ctxStream) Close() error          { return nil }
+
+// The four tests below pin down one rule: the breaker is told about the
+// PROVIDER, and a request that ended because the caller stopped waiting says
+// nothing about the provider.
+//
+// This regressed once already, and it was expensive to find. Any non-EOF error
+// from a stream was reported as ill health, so a client disconnecting or
+// exhausting its own deadline pushed the upstream's circuit toward open -- the
+// same mistake the design rejects for 429s, in the code that argues against it.
+// It was invisible against simulated providers, which are always fast enough
+// that no caller gives up on them.
+
+func TestCallerCancellationDoesNotCountAgainstHealth(t *testing.T) {
+	p := &fakeProvider{
+		name: "p",
+		startFn: func() (provider.Stream, error) {
+			return &ctxStream{failWith: errors.New("stream closed: context canceled")}, nil
+		},
+	}
+	tp := target(p, 10)
+	r := New(PolicyFailover, nil, tp)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, _, err := r.Route(ctx, req)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if _, err := stream.Next(ctx); err != nil {
+		t.Fatalf("first Next: %v", err)
+	}
+	cancel() // the client hangs up mid-completion
+	if _, err := stream.Next(ctx); err == nil {
+		t.Fatal("Next returned no error after the caller canceled")
+	}
+	_ = stream.Close()
+
+	stats := tp.Breaker.Stats()
+	if stats.Failures != 0 {
+		t.Errorf("breaker failures = %d, want 0: the caller hung up, the provider did not fail", stats.Failures)
+	}
+	// Not a success either. A cancellation is not evidence in either
+	// direction, and counting it as a success dilutes the failure ratio --
+	// which would make a genuinely sick provider look healthier the more
+	// callers give up on it.
+	if stats.Successes != 0 {
+		t.Errorf("breaker successes = %d, want 0: an abandoned request is not evidence of health", stats.Successes)
+	}
+}
+
+func TestCallerDeadlineDoesNotCountAgainstHealth(t *testing.T) {
+	p := &fakeProvider{
+		name: "p",
+		startFn: func() (provider.Stream, error) {
+			return &ctxStream{failWith: errors.New("stream closed: deadline exceeded")}, nil
+		},
+	}
+	tp := target(p, 10)
+	r := New(PolicyFailover, nil, tp)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	stream, _, err := r.Route(ctx, req)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if _, err := stream.Next(ctx); err != nil {
+		t.Fatalf("first Next: %v", err)
+	}
+	if _, err := stream.Next(ctx); err == nil {
+		t.Fatal("Next returned no error after the caller's deadline expired")
+	}
+	_ = stream.Close()
+
+	stats := tp.Breaker.Stats()
+	if stats.Failures != 0 {
+		t.Errorf("breaker failures = %d, want 0: the caller ran out of its own budget", stats.Failures)
+	}
+	if stats.Successes != 0 {
+		t.Errorf("breaker successes = %d, want 0", stats.Successes)
+	}
+}
+
+// The other side of the rule, and the case that catches an implementation which
+// sniffs the error instead of the caller's context.
+//
+// A provider enforcing its OWN timeout surfaces a deadline-shaped error while
+// the caller's context is perfectly healthy. That is the provider failing to
+// serve in the time it allows itself, and it must count. The real
+// OpenAI-compatible adapter does exactly this when its first-token watchdog
+// fires, so getting it wrong would exempt the most common real degradation
+// there is.
+func TestProviderInternalTimeoutCountsAgainstHealth(t *testing.T) {
+	p := &fakeProvider{
+		name: "p",
+		startFn: func() (provider.Stream, error) {
+			return &fakeStream{chunks: 3, failWith: &provider.Failure{
+				Provider: "p",
+				Kind:     provider.KindTimeout,
+				Message:  "no first token within 20s",
+			}}, nil
+		},
+	}
+	tp := target(p, 10)
+	r := New(PolicyFailover, nil, tp)
+
+	// The caller's context is never canceled and has no deadline.
+	stream, _, err := r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if _, _, err := provider.Drain(context.Background(), stream); err == nil {
+		t.Fatal("Drain returned no error")
+	}
+
+	stats := tp.Breaker.Stats()
+	if stats.Failures != 1 {
+		t.Errorf("breaker failures = %d, want 1: the provider timed out on its own budget, "+
+			"which is the provider failing and not the caller leaving", stats.Failures)
+	}
+}
+
+// An in-flight completion killed because the provider went away. The caller is
+// still there and still waiting, so this is the provider's fault and counts.
+func TestProviderVanishingMidStreamCountsAgainstHealth(t *testing.T) {
+	p := &fakeProvider{
+		name: "p",
+		startFn: func() (provider.Stream, error) {
+			return &fakeStream{chunks: 3, failWith: io.ErrUnexpectedEOF}, nil
+		},
+	}
+	tp := target(p, 10)
+	r := New(PolicyFailover, nil, tp)
+
+	stream, _, err := r.Route(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if _, _, err := provider.Drain(context.Background(), stream); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("Drain error = %v, want %v", err, io.ErrUnexpectedEOF)
+	}
+
+	stats := tp.Breaker.Stats()
+	if stats.Failures != 1 || stats.Successes != 0 {
+		t.Errorf("breaker stats = %+v, want exactly one failure: the connection dropped "+
+			"under a caller that was still waiting", stats)
+	}
+}
+
 func TestCloseIsIdempotent(t *testing.T) {
 	p := &fakeProvider{name: "p", startFn: func() (provider.Stream, error) {
 		return &fakeStream{chunks: 1}, nil
