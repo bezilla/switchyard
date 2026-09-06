@@ -1,6 +1,6 @@
 # Roadmap
 
-What v0.1 does not do, and what would have to be decided before it could.
+What switchyard does not do, and what would have to be decided before it could.
 
 This is a list of open questions, not a schedule. Items are here because the
 design question is interesting and unanswered; an item leaves this file when it
@@ -8,11 +8,11 @@ is built or when it is ruled out for a reason worth writing down.
 
 ---
 
-## v0.2 — streaming failover
+## v0.3 — streaming failover
 
-**The headline, and the hard version of the problem v0.1 solves.**
+**The headline, and the hard version of the problem switchyard already solves.**
 
-v0.1's failover works because of a single ordering rule: the response header is
+Failover works today because of a single ordering rule: the response header is
 written only after some provider has accepted the request. Until the first byte
 reaches the client, the gateway is free to try someone else, and the caller
 cannot tell the difference. Every failure mode the demo shows — 503s, 429s,
@@ -37,8 +37,8 @@ so the seam is a place where the response changes its mind. Also gives up the
 latency that streaming exists to buy, if the buffer is held rather than forwarded.
 
 **In-band error event.** Keep streaming, and when the upstream dies, emit a
-terminal `error` event in the SSE stream and stop — which is what v0.1 already
-does. Honest and cheap: the client is told, in the response it is already
+terminal `error` event in the SSE stream and stop — which is what `POST /v1/chat`
+already does. Honest and cheap: the client is told, in the response it is already
 reading, that the response is incomplete. Costs compatibility, because every
 caller must now handle a stream that ends badly after starting well, and the
 naive client that concatenates `chunk` events silently gets a truncated answer.
@@ -55,7 +55,7 @@ anyone". Naming it is the current state of the work.
 
 ---
 
-## v0.2 — streaming on the OpenAI-compatible endpoint
+## v0.3 — streaming on the OpenAI-compatible endpoint
 
 `POST /v1/chat/completions` ships non-streaming and refuses `"stream": true`
 with a 400 rather than answering it in one piece. That is a deliberate refusal,
@@ -67,7 +67,7 @@ Implementing it is not the hard part — it is the same server-sent event loop
 `POST /v1/chat` already runs, in OpenAI's chunk envelope. What it waits on is the
 question above: once tokens are out, a provider that dies mid-completion cannot
 be rerouted, and the OpenAI wire format has no vocabulary for "this response is
-complete and also truncated". Whatever v0.2 decides a caller should be handed on
+complete and also truncated". Whatever v0.3 decides a caller should be handed on
 a mid-stream failure, this endpoint has to hand them the same thing in a shape
 their client library will not silently discard. Shipping the loop before that is
 settled would mean choosing the answer by accident.
@@ -78,7 +78,7 @@ settled would mean choosing the answer by accident.
 
 Not scheduled, and non-trivial for reasons worth stating.
 
-**Retries.** v0.1 fails over between providers but never retries the same one.
+**Retries.** Switchyard fails over between providers but never retries the same one.
 Adding retry-on-timeout means deciding what a timeout actually proves: a request
 that timed out may still be running upstream and may still complete, so a retry
 risks paying for the same completion twice and — for the provider — serving it
@@ -97,7 +97,7 @@ that real providers implement it inconsistently, or not at all.
 
 ## Not planned
 
-The [Scope](README.md#scope) section of the README lists what v0.1 deliberately
+The [Scope](README.md#scope) section of the README lists what switchyard deliberately
 excludes — no custom frontend, no per-vendor provider adapters, no LLM analysis
 layer, no Kubernetes mode, no auth. Those are decisions rather than gaps, and
 nothing above changes them.

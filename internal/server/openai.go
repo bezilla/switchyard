@@ -33,7 +33,7 @@ import (
 // been misled about latency, about memory, and about what the gateway's
 // failover guarantee covered on its behalf. An explicit refusal naming the
 // roadmap item costs that caller one clear error and no illusions. See
-// ROADMAP.md; streaming here waits on the same question v0.2 has to answer.
+// ROADMAP.md; streaming here waits on the same question v0.3 has to answer.
 
 const openAIModelOwner = "switchyard"
 

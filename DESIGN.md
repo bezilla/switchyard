@@ -373,8 +373,8 @@ the request is still reroutable while it elapses.
 
 Past that token the stream is judged on the gap between tokens instead. A stall
 there is a failed request rather than a reroutable one — the same rule the
-simulated providers live under, and the reason streaming failover is a v0.2
-question rather than a v0.1 feature.
+simulated providers live under, and the reason streaming failover is a v0.3
+question rather than a shipped feature.
 
 **Rejected: a client-wide HTTP timeout.** One deadline cannot mean both "you had
 long enough to start" and "you had long enough to finish". A completion
@@ -429,7 +429,7 @@ no error has been misled about latency, about memory, and about which of the
 gateway's guarantees applied to its request. It will find out in production. An
 explicit 400 costs that caller one clear message and no illusions, and it is
 also honest about the state of the work: streaming here waits on the same
-question [ROADMAP.md](ROADMAP.md) has to answer for v0.2.
+question [ROADMAP.md](ROADMAP.md) has to answer for v0.3.
 
 **Rejected: silently ignoring `stream`.** The failure mode above.
 

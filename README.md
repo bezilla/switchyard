@@ -456,7 +456,7 @@ endpoint is not the missing half, it is a caller that asks for something, appear
 to be given it, and finds out later: a client that wanted tokens as they were
 made and got a single blob has been misled about latency, about memory, and
 about what the gateway's failover guarantee covered on its behalf. Streaming here
-is a [v0.2 item](ROADMAP.md) that waits on the same question v0.2 has to answer.
+is a [v0.3 item](ROADMAP.md) that waits on the same question v0.3 has to answer.
 
 ## How it works
 
@@ -498,7 +498,7 @@ provider, whether or not it is carrying load.
 
 ## Scope
 
-Deliberately **not** in v0.1:
+Deliberately **not** in v0.2:
 
 - **No custom frontend.** Grafana is the interface. No React, no bespoke UI, no
   incident-timeline view. Dashboards are checked-in JSON, provisioned from disk,
@@ -517,14 +517,16 @@ Deliberately **not** in v0.1:
   endpoints that break things are unauthenticated by design, which alone should
   keep this off anything public.
 
-[ROADMAP.md](ROADMAP.md) covers what comes after v0.1 — streaming failover is
+[ROADMAP.md](ROADMAP.md) covers what comes after v0.2 — streaming failover is
 the headline, and retries and idempotency are the known gaps — and why each one
 is a harder question than it looks.
 
 ## Limitations
 
-- **Simulated providers are not real ones.** No tokenizer, no model, no network,
-  no bad day nobody predicted. Latency distributions and failure modes are
+- **The default providers are simulated, and simulated is not real.** No tokenizer,
+  no model, no network, no bad day nobody predicted. The opt-in profile above routes
+  to a real model on your own machine; everything in this list describes the
+  simulated default, which is what the demo and the numbers above use. Latency distributions and failure modes are
   plausible, not measured. Real providers degrade by region, drop quality
   silently, and reset quotas at surprising boundaries.
 - **Cost is estimated, not billed.** Prices are the shape and rough magnitude of
