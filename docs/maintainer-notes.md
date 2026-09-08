@@ -77,6 +77,5 @@ library would remove the duplication and add a path dependency between
 `.githooks/` and `scripts/`; the hashed-function test buys the same guarantee
 without the coupling. If a third caller ever appears, that trade flips.
 
-The gate previously matched a list of names written with single-character
-brackets, so each file could match a term without containing it. That denylist is
-gone, and the brackets went with it.
+The gate previously matched commit messages and the tree against a fixed list of
+names. That denylist is gone, replaced by an allowlist that refuses on the key.
