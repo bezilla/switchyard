@@ -54,10 +54,10 @@ Every other key is refused:
 | `Verified` | free text |
 | `Measured` | free text |
 
-This replaced a denylist that grepped trailers for `generated|assisted|
-on-behalf-of`. A denylist catches the words somebody thought of and is stale the
-day a tool ships using a fourth; an allowlist refuses an unlisted key whether or
-not the gate has heard of what wrote it. Both `.githooks/pre-push` and
+This replaced a denylist that matched trailers against a fixed set of words. A
+denylist can only refuse the words somebody thought of and is stale the day an
+unanticipated one appears; an allowlist refuses an unlisted key whether or not
+the gate has heard of it. Both `.githooks/pre-push` and
 `scripts/check-identity.sh` carry the same `check_trailers()` function byte for
 byte, and `make test-hook` fails if they ever differ.
 
@@ -80,11 +80,10 @@ gate never looks at. The right-hand one ends with that line, so it **is** a
 trailer and its key must be allowlisted. Same words, two outcomes, decided by
 what comes after.
 
-That is git's own definition, read with `git interpret-trailers --parse`, and it
-is the definition the tools that stamp provenance use. A `^Key:` regex would be
-simpler and would reject this repository's own prose — six lines here are
-`Key: Value` shaped and are not trailers: `hold:`, `load:`, `claim:`, `step:`,
-`one:` and `Verified:`.
+That is git's own definition, read with `git interpret-trailers --parse`. A
+`^Key:` regex would be simpler and would reject this repository's own prose —
+eleven lines here are `Key: Value` shaped and are not trailers, among them
+`hold:`, `load:`, `claim:`, `step:`, `one:` and `Verified:`.
 
 If a push is refused for a trailer you thought was prose, check whether it ended
 up last. A new evidence word — `Tested:`, `Confirmed:` — needs adding to the
@@ -96,28 +95,19 @@ tight list.
 Two things pass this gate that an earlier version of it would have stopped. Both
 are the deliberate reduction, not an oversight.
 
-**A vendor or tool name in the body of a message.** The allowlist reads the
-trailer block and nothing else, so such a name written in a paragraph of prose is
-ordinary text and is accepted. Attribution is stamped as a trailer, and an
-unlisted key is refused whether or not the gate has heard of the tool that wrote
-it — a stronger guarantee than a name list can give, because it does not need
-updating when a new tool ships. Matching words in prose is a different job, and
-the denylist that did it matched nothing across the full history of every
-repository in this family.
+**Anything in the body of a message.** The gate's scope is the trailer block: it
+reads that and nothing else, so a `Key: Value` shape written in a paragraph of
+prose is ordinary text and is accepted. Refusing on the key is what makes the
+rule hold — an unlisted key is refused whether or not the gate has heard of it,
+which a name list cannot promise, because it needs updating every time an
+unanticipated name appears. Matching words in prose is a different job, and this
+gate does not do it.
 
-**Anything in the working tree.** Nothing greps the checkout for vendor names.
+**Anything in the working tree.** Nothing greps the checkout.
 Hand-written hooks under `.git/hooks/` once did, and `core.hooksPath` makes git
 ignore that directory entirely, so any that survive there are inert. They have
-not been restored and should not be: it is the same scan with the same zero
-matches, and it walked build artefacts, so a full validation run could leave a
-clean tree unpushable.
-
-The same trade is taken in every repository that shares this gate. Consistency
-across them is the property worth keeping — a one-repository exception would be
-the defect, not the fix.
-
-**History was not rewritten when this changed.** No force push, no retag, nothing
-dropped; only the rule applied to new pushes is different.
+not been restored and should not be: it is the same scan, and it walked build
+artefacts, so a full validation run could leave a clean tree unpushable.
 
 ### What CI runs
 

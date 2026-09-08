@@ -12,11 +12,11 @@
 #                   may appear. Every other trailer key is refused.
 #   3. secrets      gitleaks over history.
 #
-# Why an allowlist rather than a list of names to search for. A denylist catches
-# only what somebody thought to write down; it is stale the day a new tool ships
-# and it has to be smuggled past its own scan. Any tool that stamps provenance
-# onto a commit does it through a trailer, so an unlisted key is refused whether
-# or not this file has heard of the thing that wrote it.
+# Why an allowlist rather than a denylist. A denylist can only refuse what
+# someone thought to write down; it is stale the day an unanticipated key
+# appears, and the set of keys that do not exist yet cannot be enumerated.
+# Refusal is on the key, so an unlisted key is refused whether or not this
+# file has heard of it.
 #
 # Trailers are read with `git interpret-trailers --parse`: git's own definition,
 # the last paragraph and only when the whole paragraph parses as trailers. A

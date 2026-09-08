@@ -9,15 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The commit gate allowlists trailers instead of hunting for vendor names.**
+- The commit identity and trailer policy documentation was consolidated and
+  reworded. No gate, workflow or hook changed behaviour.
+
+- **The commit gate allowlists trailers instead of matching them against a name
+  list.**
   Only `Signed-off-by` carrying exactly `Paul Bezilla <bezilla@protonmail.com>`,
   `Verified` and `Measured` may appear on a commit or in an annotated tag's body;
-  every other key is refused. This replaced two scans for a list of vendor terms
-  and, in `scripts/check-identity.sh`, a trailer denylist grepping for
-  `generated|assisted|on-behalf-of` — a denylist catches the words somebody
-  thought of, and is stale the day a tool ships using a fourth. Trailers are read
-  with `git interpret-trailers --parse`, git's own definition, because a `^Key:`
-  regex would reject six lines of this repository's own commit prose.
+  every other key is refused. This replaced two name-based denylists and, in
+  `scripts/check-identity.sh`, a trailer denylist matching a fixed set of words —
+  a denylist can only refuse what somebody thought of, and is stale the day an
+  unanticipated word appears. Trailers are read with
+  `git interpret-trailers --parse`, git's own definition, because a `^Key:` regex
+  would reject eleven lines of this repository's own commit prose.
 - **Annotated tags are checked**: the tagger must be the canonical identity and
   the annotation body goes through the same allowlist. `v0.1.0` and `v0.2.0` both
   pass as they stand; nothing inspected either before.

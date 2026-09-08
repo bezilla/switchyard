@@ -11,9 +11,9 @@
 #
 # The trailer rule is an allowlist: Signed-off-by carrying exactly the canonical
 # identity, Verified and Measured carrying free text, everything else refused.
-# It replaced a denylist that grepped trailers for 'generated|assisted|
-# on-behalf-of' -- which caught only the words somebody had thought of, and was
-# stale the day a tool shipped using a fourth one.
+# It replaced a denylist that matched trailers against a fixed set of words --
+# which caught only the words somebody had thought of, and was stale the day an
+# unanticipated one appeared.
 #
 # check_trailers below is BYTE-IDENTICAL to the copy in .githooks/pre-push, and
 # .githooks/selftest.sh asserts that, so the local gate and this one cannot
@@ -35,7 +35,7 @@
 # cannot be satisfied -- and a gate that cannot be satisfied gets switched off.
 #
 # What this does NOT relax: for every ref that is in scope, the identity
-# assertion, the attribution scans and the walk over every commit in range are
+# assertion, the trailer allowlist and the walk over every commit in range are
 # exactly what they were. Narrowing which refs are examined is not the same as
 # narrowing what is checked on them. Do not narrow this further to main alone:
 # a local topic branch is a branch this clone can push, so it is in scope.

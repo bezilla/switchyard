@@ -665,31 +665,27 @@ tag's body: `Signed-off-by` carrying exactly `Paul Bezilla
 <bezilla@protonmail.com>`, `Verified` and `Measured` carrying free text.
 Everything else is refused.
 
-**Why.** What this replaced was two scans for a list of vendor names plus, in
-`check-identity.sh`, a trailer **denylist** — `grep -icE
-'generated|assisted|on-behalf-of'`. Measured before removing them: across the
-full history of all six repositories in this family, 207 commits, the name scans
-matched nothing, and the denylist counted nothing here.
+**Why.** What this replaced was two name-based denylists plus, in
+`check-identity.sh`, a trailer **denylist** matching a fixed set of words.
 
-A denylist catches the words somebody thought of. It is stale the day a tool
-ships using a fourth one, and it cannot be made complete because the list of
+A denylist can only refuse what somebody thought of. It is stale the day an
+unanticipated word appears, and it cannot be made complete because the set of
 things that do not exist yet is not enumerable. An allowlist inverts the
-question: any tool that stamps provenance onto a commit does it through a
-trailer, so an unlisted key is refused whether or not this repository has heard
-of the thing that wrote it.
+question: refusal is on the key, so an unlisted key is refused whether or not
+this repository has heard of it.
 
 **Rejected: keeping the denylist and adding to it.** That is the same bet with a
-longer list, and it loses on the first tool nobody predicted.
+longer list, and it loses on the first key nobody predicted.
 
 **Trailers are read with `git interpret-trailers --parse`, not a regex.** That is
 git's own definition — the last paragraph, and only when the whole paragraph
-parses as trailers — and it is the definition the tools stamping provenance use.
-It has an edge worth stating: **whether a `Key: Value` line is a trailer depends
+parses as trailers. It has an edge worth stating: **whether a `Key: Value` line is a trailer depends
 on which paragraph it lands in.** `Verified: ...` followed by more prose is
 ordinary text the gate never inspects; the same line at the end is a trailer
-whose key must be allowlisted. Six lines in this repository are prose of exactly
-that shape — `hold:`, `load:`, `claim:`, `step:`, `one:` and, yes, `Verified:` —
-so a `^Key:` regex would have rejected this repository's own history.
+whose key must be allowlisted. Eleven lines in this repository are prose of exactly
+that shape — among them `hold:`, `load:`, `claim:`, `step:`, `one:` and, yes,
+`Verified:` — so a `^Key:` regex would have rejected this repository's own
+history.
 
 **Annotated tags are checked now**, which nothing did before: the tagger must be
 the canonical identity, and the annotation body goes through the same allowlist.
@@ -701,7 +697,6 @@ for the reason recorded above: that identity exists on no branch and no tag here
 and a gate that flags a commit nobody can remove is a gate that gets switched
 off.
 
-**History was not rewritten.** No force push, no retag, nothing dropped. Both
-gates were run over all 38 commits and both tags before the change landed: the
+Both gates were run over all 38 commits and both tags before the change landed: the
 old hook accepted 38 and rejected 0, the new hook accepted 38 and rejected 0, and
 the count of commits the old gate accepts and the new one refuses is 0.
